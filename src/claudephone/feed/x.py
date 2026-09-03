@@ -43,6 +43,18 @@ _TAB_Y_MIN, _TAB_Y_MAX = 280, 460
 _TAB_SKIP = {"add tab", "scroll to top", "show navigation drawer",
              "find people to follow"}
 
+# The visible content band: below the sticky header (tab strip ends ~451) and
+# above the bottom nav (~2200). Nodes outside it are in the tree but covered by
+# chrome, so tapping them hits the chrome instead of the post.
+_CONTENT_TOP, _CONTENT_BOTTOM = 470, 2150
+
+# Wide nodes that are chrome, not a post body.
+_NOT_BODY_LABELS = {"video", "image", "gif", "unmute", "mute", "install",
+                    "show more", "show this thread", "translated from",
+                    "show original", "explain this post with grok"}
+
+_HANDLE_RE = re.compile(r"^@[A-Za-z0-9_]{1,15}$")
+
 _BOUNDS = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
 
 JOURNAL = Path(__file__).resolve().parents[3] / "artifacts" / "feed" / "journal.jsonl"
@@ -52,9 +64,35 @@ JOURNAL = Path(__file__).resolve().parents[3] / "artifacts" / "feed" / "journal.
 # raw helpers
 # --------------------------------------------------------------------------
 
+_U2: dict = {}
+
+
 def _raw_xml(serial: str = "") -> str:
-    dev.shell("uiautomator dump /sdcard/xfeed.xml", serial=serial)
-    return dev.adb("exec-out", "cat", "/sdcard/xfeed.xml", serial=serial)
+    """One dump path for the whole feed package, u2-backed.
+
+    Two reasons, both learned the hard way:
+
+    1. **They cannot coexist.** `uiautomator2` IS a UiAutomation, which is a
+       special AccessibilityService, and Android permits exactly one. Reading
+       through u2 (feed/read.py) while acting through shell `uiautomator dump`
+       kills one of them - observed as the dump exiting 137 (SIGKILL) mid-run.
+       The README warned about this for the phase-1/phase-2 backends; it applies
+       just as much to two paths inside one process.
+    2. **u2 is 12x faster** - 0.21 s against 2.47 s for shell dump + cat,
+       measured on this device over USB - and it returns the full tree where the
+       shell dump returns a compressed one (~25 KB vs ~8 KB).
+
+    Falls back to the shell path if u2 cannot start, so a device without the
+    agent still works, just slowly.
+    """
+    try:
+        d = _U2.get(serial)
+        if d is None:
+            d = _U2[serial] = dev.u2(serial)
+        return d.dump_hierarchy()
+    except Exception:
+        dev.shell("uiautomator dump /sdcard/xfeed.xml", serial=serial)
+        return dev.adb("exec-out", "cat", "/sdcard/xfeed.xml", serial=serial)
 
 
 def _nodes(xml: str) -> list[dict]:
@@ -71,8 +109,13 @@ def _nodes(xml: str) -> list[dict]:
             continue
         b = tuple(int(g) for g in m.groups())
         label = (a.get("text") or "").strip() or (a.get("content-desc") or "").strip()
+        rid = a.get("resource-id") or ""
         out.append({
             "label": label,
+            # X hangs almost nothing on resource-ids, but Instagram names its
+            # controls properly - and some of them (the reel More button) have
+            # touch targets too unreliable to hit by label. Carry the id.
+            "rid": rid.split("/")[-1] if rid else "",
             "bounds": b,
             "center": ((b[0] + b[2]) // 2, (b[1] + b[3]) // 2),
             "clickable": a.get("clickable") == "true",
@@ -192,6 +235,30 @@ def timelines(serial: str = "", nodes: Optional[list] = None) -> dict:
     return {"active": active, "tabs": tabs, "on_home": bool(tabs),
             "note": None if active else
             "no cell reported selected - dump may be mid-animation; re-dump"}
+
+
+def scroll_to_top(serial: str = "", settle: float = 2.0) -> dict:
+    """Jump to the head of the timeline, and take any "new posts" pill offered.
+
+    Without this a feed pass reads whatever was left on screen from the last
+    one - which is the OLD ranking, not the response to what you just did. The
+    account owner's correction, 2026-09-03: go to the top first, or you are not
+    looking at the updated feed at all.
+    """
+    nodes = _nodes(_raw_xml(serial))
+    pill = next((n for n in nodes
+                 if n["label"] and n["label"].strip().lower().startswith("show")
+                 and "post" in n["label"].lower()), None)
+    top = next((n for n in nodes
+                if n["label"].strip().lower() == "scroll to top"), None)
+    used = None
+    if pill:                       # the blue pill both refreshes AND scrolls
+        _tap(*pill["center"], serial=serial, settle=settle)
+        used = pill["label"]
+    elif top:
+        _tap(*top["center"], serial=serial, settle=settle)
+        used = "Scroll to top"
+    return {"at_top": bool(used), "used": used}
 
 
 def ensure_home(serial: str = "", settle: float = 2.5) -> dict:
@@ -501,13 +568,15 @@ def snapshot(max_tweets: int = 40, max_swipes: int = 20, settle_s: float = 1.3,
     # X collapses the tab strip once the feed is scrolled, so a snapshot taken
     # where the last one left off cannot see which timeline it is sampling.
     # Return to the top first: it also makes successive samples comparable.
+    # ALWAYS start from the head of the timeline, not merely when the tab strip
+    # is missing. Sampling from wherever the screen happened to be reads the
+    # ranking as it was when that content loaded - so a snapshot taken right
+    # after a campaign can report the OLD feed and hide the change it is meant
+    # to measure. Found 2026-09-03, after an "after" snapshot disagreed with
+    # what was actually at the top of the feed.
+    scroll_to_top(serial)
     t = timelines(serial)
     if t["active"] is None:
-        top = next((n for n in _nodes(_raw_xml(serial))
-                    if n["clickable"] and n["label"].lower() == "scroll to top"),
-                   None)
-        if top:
-            _tap(*top["center"], serial=serial, settle=1.5)
         t = timelines(serial)
     merged: dict[str, dict] = {}
     order: list[str] = []
@@ -665,11 +734,21 @@ def like(nth: int = 0, apply: bool = False, serial: str = "") -> dict:
     journalled.
     """
     nodes = _nodes(_raw_xml(serial))
-    likes = sorted([n for n in nodes if n["label"].strip().lower() == "like"],
+    # Only controls in the CONTENT band. A post scrolled up under X's sticky
+    # header keeps its Like button in the tree at a y the header now covers, so
+    # an unguarded "topmost Like" tap lands on the header instead - on a search
+    # screen that is the query field, which opens the suggestions/People view.
+    # Observed 2026-09-03: likes journalled at y=230/245/282, above the result
+    # tab strip at y=307, having liked nothing at all.
+    likes = sorted([n for n in nodes
+                    if n["label"].strip().lower() == "like"
+                    and _CONTENT_TOP < n["bounds"][1] < _CONTENT_BOTTOM],
                    key=lambda n: n["bounds"][1])
     if nth >= len(likes):
-        return {"error": "not that many like controls visible",
-                "visible": len(likes), "wanted": nth}
+        return {"error": "no like control in the content band",
+                "visible": len(likes), "wanted": nth,
+                "note": "controls above y=%d are under the sticky header"
+                        % _CONTENT_TOP}
     plan = {"action": "like", "nth": nth, "tap": likes[nth]["center"],
             "surface": surface(serial, nodes=nodes)["surface"]}
     if not apply:
@@ -832,3 +911,363 @@ def engage(duration_s: float = 120.0, like_every: int = 2,
     rec["path"] = str(path)
     _journal({**plan, "likes_fired": len(liked)})
     return rec
+
+
+# --------------------------------------------------------------------------
+# the following list
+# --------------------------------------------------------------------------
+
+def open_following(serial: str = "", settle: float = 3.0) -> dict:
+    """Navigation drawer -> Following. Where the follow graph is editable."""
+    ensure_home(serial)
+    nodes = _nodes(_raw_xml(serial))
+    drawer = next((n for n in nodes
+                   if "navigation drawer" in n["label"].lower()), None)
+    if not drawer:
+        return {"error": "nav drawer not found"}
+    _tap(*drawer["center"], serial=serial, settle=2.5)
+
+    nodes = _nodes(_raw_xml(serial))
+    link = next((n for n in nodes if n["label"] == "Following"), None)
+    if not link:
+        return {"error": "Following link not in drawer",
+                "labels": [n["label"] for n in nodes if n["label"]][:20]}
+    _tap(*link["center"], serial=serial, settle=settle)
+    return {"opened": True}
+
+
+def following_list(max_scrolls: int = 14, serial: str = "") -> dict:
+    """Every account this profile follows: handle, name, bio, and its button.
+
+    Rows are read by grouping around the `@handle` node - the same boundary
+    trick `assemble_tweets` uses for timelines, because this screen has no
+    per-row resource-id either. The BIO is the point: classifying an account
+    from its handle alone is guesswork, and the bio is what a person would read
+    before deciding to unfollow.
+    """
+    rows: dict[str, dict] = {}
+    order: list[str] = []
+    barren = 0
+    for _ in range(max_scrolls + 1):
+        nodes = sorted(_nodes(_raw_xml(serial)), key=lambda n: (n["bounds"][1],
+                                                                n["bounds"][0]))
+        labelled = [n for n in nodes if n["label"]]
+        fresh = 0
+        for i, n in enumerate(labelled):
+            # A real handle is @ + up to 15 word chars and nothing else. Without
+            # this a BIO that merely mentions another account ("@GM Chair and
+            # CEO leading...") is read as a row of its own.
+            if not _HANDLE_RE.match(n["label"].strip()):
+                continue
+            handle = n["label"].strip()
+            if handle in rows:
+                continue
+            y = n["bounds"][1]
+            name = next((m["label"] for m in reversed(labelled[:i])
+                         if m["label"] and not m["label"].startswith("@")
+                         and m["label"] not in ("Verified", "Following",
+                                                "Follow")), None)
+            # bio is the first long run of text below the handle
+            bio = next((m["label"] for m in labelled[i + 1:]
+                        if len(m["label"]) > 25
+                        and m["bounds"][1] >= y), "")
+            btn = next((m for m in labelled[i:]
+                        if m["label"] in ("Following", "Follow")
+                        and abs(m["bounds"][1] - y) < 160), None)
+            rows[handle] = {"handle": handle, "name": name, "bio": bio[:220],
+                            "button": btn["label"] if btn else None,
+                            "button_at": btn["center"] if btn else None}
+            order.append(handle)
+            fresh += 1
+        barren = 0 if fresh else barren + 1
+        if barren >= 2:
+            break
+        dev.shell("input swipe 540 1800 540 900 300", serial=serial)
+        time.sleep(1.0)
+    return {"count": len(order), "accounts": [rows[h] for h in order]}
+
+
+def unfollow(handle: str, apply: bool = False, serial: str = "") -> dict:
+    """Unfollow one account from the Following list.
+
+    Tapping the `Following` button opens a confirmation sheet; this matches the
+    confirm control by LABEL like every other mutation here, so a layout change
+    makes it refuse rather than tap something else. Irreversible in practice -
+    re-following does not restore the ranker's history - which is why it
+    journals and why the caller should have seen the list first.
+    """
+    nodes = _nodes(_raw_xml(serial))
+    row = next((n for n in nodes if n["label"].strip().lower()
+                == handle.strip().lower()), None)
+    if not row:
+        return {"error": "handle not on screen", "handle": handle,
+                "hint": "scroll the following list to it first"}
+    y = row["bounds"][1]
+    btn = next((n for n in nodes
+                if n["label"] == "Following"
+                and abs(n["bounds"][1] - y) < 160), None)
+    if not btn:
+        return {"error": "no Following button beside that row",
+                "handle": handle, "note": "already unfollowed?"}
+    plan = {"action": "unfollow", "handle": handle, "tap": btn["center"]}
+    if not apply:
+        return {"applied": False, "plan": plan}
+
+    _tap(*btn["center"], serial=serial, settle=1.8)
+    confirm = next((n for n in _nodes(_raw_xml(serial))
+                    if n["label"].strip().lower() == "unfollow"), None)
+    if confirm:
+        _tap(*confirm["center"], serial=serial, settle=1.5)
+        plan["confirmed"] = True
+    else:
+        plan["confirmed"] = False      # some builds unfollow without a sheet
+    _journal(plan)
+    return {"applied": True, "plan": plan}
+
+
+
+
+# --------------------------------------------------------------------------
+# opening a post - the strong engagement signal
+# --------------------------------------------------------------------------
+#
+# Scrolling past a relevant post is a weak signal; opening it is not. A tap on
+# the body is a click, the detail view produces real dwell, and the replies are
+# more on-topic text to read. `click`, `open_link`, `quoted_click` and `dwell`
+# are all separately scored actions in xai-org/x-algorithm, so a post that is
+# opened, read and liked sends four signals where a scroll-past sends none.
+
+_DETAIL_MARKS = ("post your reply", "open full composer", "reply to")
+
+
+def in_post_detail(serial: str = "", nodes: Optional[list] = None) -> bool:
+    """Whether a single post is open, rather than a list of them."""
+    if nodes is None:
+        nodes = _nodes(_raw_xml(serial))
+    labs = {n["label"].strip().lower() for n in nodes if n["label"]}
+    return any(m in l for l in labs for m in _DETAIL_MARKS)
+
+
+def open_post(nth: int = 0, serial: str = "", settle: float = 2.5,
+              expect: str = "") -> dict:
+    """Open a visible post by tapping its body.
+
+    Targets the widest text node in the content band rather than a control:
+    tapping metrics toggles them, tapping media plays it, and only the body
+    opens the post. Verifies afterwards, because a tap that silently did
+    nothing would otherwise be scored as a successful open.
+
+    `expect` is the text of the post the CALLER decided to open, and it matters
+    more than it looks. A caller reads the screen, classifies `posts[0]`, then
+    calls this - which re-dumps and picks the topmost body. Those two scans can
+    disagree, and on 2026-09-03 they did: a campaign targeting Bollywood
+    classified a Bollywood post and opened a football one, because nothing tied
+    the decision to the tap. Pass `expect` and this refuses rather than opening
+    something the caller never judged.
+    """
+    from ..tools.apps.twitter import assemble_tweets
+
+    xml = _raw_xml(serial)
+    nodes = _nodes(xml)
+
+    # NEVER open an ad. A promoted post's body is not a post link - tapping one
+    # opened the Play Store install sheet for a crypto wallet on 2026-09-03.
+    # An unattended loop doing that is installing apps, not reading a feed.
+    ad_text = {(t.get("text") or "")[:40]
+               for t in assemble_tweets(uix.parse(xml)) if t.get("is_ad")}
+
+    # Length is a poor filter for a post body: "2027 UCL winners" is 16
+    # characters and a perfectly real post. Width plus an exclusion list does
+    # the work instead - a body spans the column, chrome does not.
+    bodies = [n for n in nodes
+              if n["label"] and len(n["label"]) >= 8
+              and (n["bounds"][2] - n["bounds"][0]) > 600
+              and _CONTENT_TOP < n["bounds"][1] < _CONTENT_BOTTOM
+              and n["label"].strip().lower() not in _NOT_BODY_LABELS
+              and n["label"][:40] not in ad_text]
+    bodies.sort(key=lambda n: n["bounds"][1])
+
+    if expect:
+        key = " ".join(expect.split())[:40]
+        match = next((b for b in bodies
+                      if " ".join(b["label"].split())[:40] == key), None)
+        if match is None:
+            return {"error": "the post the caller judged is no longer on screen",
+                    "expected": key,
+                    "visible": [b["label"][:40] for b in bodies][:5],
+                    "note": "refusing to open a different post"}
+        target = match
+    else:
+        if nth >= len(bodies):
+            return {"error": "no non-ad post body in the content band",
+                    "visible": len(bodies), "ads_skipped": len(ad_text)}
+        target = bodies[nth]
+    _tap(*target["center"], serial=serial, settle=settle)
+
+    # A tap can leave X entirely - an ad we failed to spot, or a link in the
+    # body. Get back before anything else runs, and say so.
+    fg = dev.foreground(serial=serial).get("package") or ""
+    if fg != X_PKG:
+        for _ in range(3):
+            dev.shell("input keyevent KEYCODE_BACK", serial=serial)
+            time.sleep(1.2)
+            if (dev.foreground(serial=serial).get("package") or "") == X_PKG:
+                break
+        return {"opened": False, "left_app": fg, "tapped": target["center"],
+                "note": "tap left X (ad or external link); backed out"}
+
+    if not in_post_detail(serial):
+        return {"opened": False, "tapped": target["center"],
+                "note": "tap did not open a detail view"}
+    return {"opened": True, "text": target["label"][:120],
+            "tapped": target["center"]}
+
+
+def close_post(serial: str = "", settle: float = 1.5) -> dict:
+    """Back out of a detail view, and confirm we actually left it."""
+    dev.shell("input keyevent KEYCODE_BACK", serial=serial)
+    time.sleep(settle)
+    return {"closed": not in_post_detail(serial)}
+
+
+def read_replies(scrolls: int = 2, serial: str = "",
+                 dwell: float = 1.6) -> dict:
+    """Scroll an open post and collect its replies.
+
+    Dwell is the point as much as the text: time spent in a detail view is what
+    separates reading a post from scrolling past it.
+    """
+    from ..tools.apps.twitter import assemble_tweets
+
+    seen: dict = {}
+    for _ in range(max(1, scrolls)):
+        for t in assemble_tweets(uix.parse(_raw_xml(serial))):
+            seen.setdefault("%s|%s" % (t.get("handle"),
+                                       (t.get("text") or "")[:60]), t)
+        time.sleep(dwell)
+        dev.shell("input swipe 540 1700 540 900 300", serial=serial)
+        time.sleep(0.5)
+    return {"replies_seen": len(seen),
+            "handles": [t.get("handle") for t in seen.values()][:12]}
+
+
+def engage_post(nth: int = 0, like_it: bool = True, reply_scrolls: int = 2,
+                apply: bool = False, serial: str = "", expect: str = "") -> dict:
+    """Open a post, read its replies, optionally like it, and come back.
+
+    The full interaction a reader performs, in one call. Liking happens INSIDE
+    the detail view, where the topmost Like control unambiguously belongs to the
+    opened post - on a list it belongs to whichever post happens to be highest.
+    Always returns to the list, even when a step fails, so a campaign loop does
+    not continue from an unexpected screen.
+    """
+    out = {"nth": nth, "applied": apply}
+    if not apply:
+        out["plan"] = {"action": "engage_post", "nth": nth,
+                       "would": ["open", "read_replies", "like" if like_it
+                                 else "no_like", "back"]}
+        return out
+
+    opened = open_post(nth, serial=serial, expect=expect)
+    out["open"] = opened
+    if not opened.get("opened"):
+        return out
+    try:
+        out["replies"] = read_replies(reply_scrolls, serial=serial)
+        if like_it:
+            out["like"] = like(0, apply=True, serial=serial)
+    finally:
+        out["close"] = close_post(serial=serial)
+    _journal({"action": "engage_post", "nth": nth,
+              "liked": bool(like_it and out.get("like", {}).get("applied")),
+              "replies_seen": out.get("replies", {}).get("replies_seen")})
+    return out
+
+
+# --------------------------------------------------------------------------
+# cost accounting
+# --------------------------------------------------------------------------
+#
+# Every feed action is a sequence of device round trips, and the round trips
+# dominate: a dump is ~0.2-0.5 s and a tap costs its settle time whether or not
+# anything happened. Without per-action costs, "make the feed football" is
+# untimeable and there is no way to know whether a campaign is slow because of
+# the searches, the likes, or the measurement. So the public entry points are
+# wrapped and every call is recorded.
+#
+# This measures WALL TIME on the host, which is what the caller waits for. It
+# includes the deliberate `settle` sleeps after taps, because those are a real
+# part of what an action costs - they are not overhead to be optimised away
+# without changing behaviour.
+
+TIMINGS: list = []
+
+_INSTRUMENTED = (
+    "timelines", "surface", "ensure_home", "switch_timeline",
+    "post_options", "not_interested", "add_to_list", "like",
+    "open_timelines_screen", "search_timelines", "pin",
+    "search", "switch_result_tab", "snapshot", "consume", "engage",
+    "open_following", "following_list", "unfollow",
+    "open_post", "close_post", "read_replies", "engage_post",
+)
+
+
+def _instrument() -> None:
+    import functools
+    g = globals()
+    for name in _INSTRUMENTED:
+        fn = g.get(name)
+        if fn is None or getattr(fn, "_timed", False):
+            continue
+
+        @functools.wraps(fn)
+        def wrapper(*a, _fn=fn, _name=name, **kw):
+            t0 = time.time()
+            ok = True
+            try:
+                return _fn(*a, **kw)
+            except Exception:
+                ok = False
+                raise
+            finally:
+                TIMINGS.append({"action": _name,
+                                "seconds": round(time.time() - t0, 2),
+                                "ok": ok, "at": round(time.time(), 2)})
+
+        wrapper._timed = True
+        g[name] = wrapper
+
+
+def reset_timings() -> None:
+    TIMINGS.clear()
+
+
+def cost_report(reset: bool = False) -> dict:
+    """Per-action cost: calls, total, mean, share of the run.
+
+    The share column is the one that matters when deciding what to optimise -
+    an action costing 3 s is irrelevant if it runs once, and an action costing
+    0.4 s dominates if it runs two hundred times.
+    """
+    agg: dict = {}
+    for t in TIMINGS:
+        a = agg.setdefault(t["action"], {"calls": 0, "total_s": 0.0,
+                                         "failed": 0})
+        a["calls"] += 1
+        a["total_s"] += t["seconds"]
+        if not t["ok"]:
+            a["failed"] += 1
+    grand = sum(a["total_s"] for a in agg.values()) or 1.0
+    for a in agg.values():
+        a["mean_s"] = round(a["total_s"] / a["calls"], 2)
+        a["total_s"] = round(a["total_s"], 1)
+        a["share"] = round(a["total_s"] / grand, 3)
+    rows = sorted(agg.items(), key=lambda kv: -kv[1]["total_s"])
+    out = {"actions": dict(rows), "total_s": round(grand, 1),
+           "calls": len(TIMINGS)}
+    if reset:
+        reset_timings()
+    return out
+
+
+_instrument()

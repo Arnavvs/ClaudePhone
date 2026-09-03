@@ -127,13 +127,91 @@ host equivalent, and two of the four are slightly *worse*.
 
 ---
 
-## 5. What has not been measured yet
+## 5. Targeted queries are slower than a full dump
+
+Testing the idea that an "observer" should fetch only the fields it needs
+instead of the whole screen. Settings home, 45 KB hierarchy, on-device.
+
+| Read | Median |
+|---|---|
+| full `dump_hierarchy()` | 260 ms |
+| one targeted `.info` query | 225 ms |
+| **three targeted `.info` queries** | **678 ms** |
+
+**A three-field observer costs 2.6x a full dump.** The jsonrpc round trip is a
+~220 ms floor and the payload is nearly free - 45 KB serialises in the same time
+as one field. So selective fetching is a pessimisation, and the rule is: **one
+full read per observation, always**, then filter in Python where it is free.
+
+This killed a design that was about to be built. The diff idea it was competing
+with still wins, but on **tokens** rather than latency: a dump is ~1.5 KB of
+compact elements and a diff is ~200 bytes.
+
+---
+
+## 6. The accessibility bridge (phase 2)
+
+The 220 ms "floor" above turned out to be a property of uiautomator2, not of
+Android. Same screen, same device, back to back:
+
+| Read path | Median |
+|---|---|
+| `uiautomator dump` CLI | 2540 ms |
+| uiautomator2 `dump_hierarchy()` | 215-260 ms |
+| **bridge `/tree`** | **10-13 ms** |
+| bridge `/tree`, first call after connect | 97 ms |
+
+**~20x faster than u2, ~200x faster than the CLI.** An AccessibilityService is
+already inside the process holding the node tree, so a read is a walk over live
+objects rather than a socket round trip plus XML serialisation.
+
+Through the tool registry, end to end:
+
+| Call | Before (u2) | After (bridge) |
+|---|---|---|
+| `look()` on-device | ~300 ms | **13 ms** |
+| `look()` from host via adb forward | ~300 ms | 40 ms |
+| `swipe_and_see()` wait for change | blind 1-2 s sleep | **0.14 s** (event) |
+
+### Events
+
+`/changed` blocks inside the service and returns when `onAccessibilityEvent`
+fires. Measured waking **133 ms after a swipe** - a push, not a poll.
+
+### Coexistence: both backends run at once
+
+The project previously recorded that uiautomator2 and a custom
+AccessibilityService were mutually exclusive. **Tested on Android 14 and false:**
+
+```
+accessibility service is ENABLED; can uiautomator2 still run?
+  u2 dump_hierarchy: OK, 44556 bytes, median 215 ms
+  COEXISTENCE: both backends work simultaneously
+```
+
+With one caveat that is not about Android: from a **host**, once u2 is used in
+the same Python process, every adb-forwarded connection from that process starts
+returning empty - verified on two ports, while curl from another process kept
+working. So the bridge defaults to on-device only. Details in
+[ACCESSIBILITY.md](ACCESSIBILITY.md).
+
+### Cost of the APK
+
+20 KB, no dependencies, built with `aapt2 -> javac -> d8 -> apksigner`. No
+Gradle, no network.
+
+---
+
+## 7. What has not been measured yet
 
 Stated so the gaps are not mistaken for results:
 
 - **End-to-end agent runs.** Requires an `OPENROUTER_API_KEY`, which was not
   available at build time. Steps-to-completion and cost per task on a cheap
   model are unknown.
+- **Battery and thermals** of an always-on accessibility service plus a busy
+  event loop. Unmeasured, and likely the binding constraint on continuous
+  watching.
 - **Local model throughput.** No GGUF has been loaded on this device yet.
   [SESSION-STATE](../../Dev/SESSION-STATE.md) budgets LFM2-1.2B Q4 at ~800 MB
   against a ~4–4.5 GB real ceiling, but tokens/sec is unmeasured.

@@ -175,6 +175,7 @@ Measured on the target device — the numbers that shaped the design:
 | `uiautomator dump` CLI, on-device | 2520 ms |
 | **uiautomator2 server, over Wi-Fi** | **220 ms** |
 | **uiautomator2 server, on-device** | **306 ms** |
+| **accessibility bridge, on-device** | **13 ms** |
 
 Two honest conclusions: the naive CLI is 11× slower than a persistent server,
 and **on-device is not faster per call** — it is slightly slower. On-device is

@@ -221,7 +221,17 @@ def test_real_registry():
     from claudephone.agent import OUTBOUND, build_registry
     reg = build_registry()
     check("tools registered", len(reg.tools) > 100, str(len(reg.tools)))
-    check("core is small", len(reg.specs()) < 30, str(len(reg.specs())))
+    # core carries the compound-action pack now, which is deliberate: those are
+    # the tools the agent should reach for by default. The ceiling still matters
+    # though - core is what every turn pays for - so keep it honest.
+    core_specs = len(reg.specs())
+    check("core stays small", core_specs <= 35, str(core_specs))
+    import json
+    core_tokens = len(json.dumps(reg.specs({"core"}))) // 4
+    check("core schema under 4k tokens", core_tokens < 4000, str(core_tokens))
+    all_tokens = len(json.dumps(reg.specs(set(reg.packs())))) // 4
+    check("packs still save >3x", all_tokens / max(core_tokens, 1) > 3.0,
+          "%d vs %d" % (all_tokens, core_tokens))
     check("every tool has a description",
           all(t.description.strip() for t in reg.tools.values()))
     check("every tool has a schema",

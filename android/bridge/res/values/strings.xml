@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ClaudePhone Bridge</string>
+    <string name="service_description">Lets the ClaudePhone agent read the screen and perform taps and swipes, without adb. Local only: it listens on 127.0.0.1 and is not reachable from the network.</string>
+</resources>

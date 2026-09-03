@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  canRetrieveWindowContent  - required to read the node tree at all.
+  canPerformGestures        - required for dispatchGesture (tap/swipe).
+  flagRetrieveInteractiveWindows - see nodes in every visible window, not just
+                              the focused one, which matters for dialogs and
+                              bottom sheets.
+  notificationTimeout=0     - deliver content-changed events immediately; the
+                              whole point is to replace a polling loop.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowContentChanged|typeWindowStateChanged|typeViewScrolled"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagReportViewIds|flagIncludeNotImportantViews"
+    android:canRetrieveWindowContent="true"
+    android:canPerformGestures="true"
+    android:notificationTimeout="0"
+    android:description="@string/service_description" />

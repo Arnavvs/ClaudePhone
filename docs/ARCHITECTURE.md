@@ -36,12 +36,16 @@ Measured on the target device (full table in [BENCHMARKS.md](BENCHMARKS.md)):
 | `uiautomator dump` CLI, on-device via loopback | 2520 ms |
 | **uiautomator2 persistent server, over Wi-Fi** | **220 ms** |
 | **uiautomator2 persistent server, on-device** | **306 ms** |
+| **accessibility bridge, on-device** (phase 2) | **13 ms** |
 
 Two things fall out of this:
 
 1. **The transport was never the bottleneck.** Moving on-device saved 20 ms out
    of 2540. What saved 2300 ms was abandoning the `uiautomator dump` CLI — which
    spawns a fresh instrumentation process per call — for a persistent server.
+   The remaining 220 ms turned out to be a property of *uiautomator2*, not of
+   Android: the accessibility bridge reads the same screen in **13 ms**,
+   because it walks a tree it already holds in process.
 2. **On-device is measurably *slower* per call** (306 ms vs 220 ms). The phone's
    A78 cores serialise the view hierarchy more slowly than the laptop consumes
    it over Wi-Fi.
@@ -126,6 +130,8 @@ the loopback with it. `claudephone doctor` reports this precisely, and
   tools/            device · ui · input · system · shell · files
                     phone · learn · instagram · x
   ────────────────────────────────────────────────────────────
+  runtime/          observation cache, diffs, event-driven change detection
+  runtime/bridge    the 13 ms AccessibilityService backend (phase 2)
   ui.py             XML hierarchy → compact typed elements
   selectors/        versioned per-app field maps + drift detection
   device.py         adb + uiautomator2, serial-agnostic
@@ -359,4 +365,8 @@ oversight:
   against a stranger on your network, not against the operator.
 - **Not a replacement for an AccessibilityService.** uiautomator2 *is* a
   `UiAutomation`, which is itself a special AccessibilityService, and Android
-  permits exactly one. A custom service would be a swap, not an addition.
+  permitted exactly one.
+  **Corrected 2026-09-04: tested on Android 14, and false.** With the bridge
+  enabled and serving, u2 still dumped normally at 215 ms. The bridge shipped
+  as an **addition**, and reads the screen in ~13 ms - see
+  [ACCESSIBILITY.md](ACCESSIBILITY.md).

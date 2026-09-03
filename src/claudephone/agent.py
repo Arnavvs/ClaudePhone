@@ -16,9 +16,9 @@ from .harness import meta_tools
 from .harness.loop import Agent, Budget, Policy
 from .harness.models import Chat, ModelConfig
 from .harness.registry import ToolRegistry
-from .tools import (device_tools, explore_tools, file_tools, input_tools,
-                    registry_tools, shell_tools, system_tools, thread_tools,
-                    ui_tools)
+from .tools import (compound_tools, device_tools, explore_tools, file_tools,
+                    input_tools, registry_tools, shell_tools, system_tools,
+                    thread_tools, ui_tools)
 from .tools import phone_tools
 from .tools.apps import instagram as ig_tools
 from .tools.apps import instagram_comments as ig_comments
@@ -42,6 +42,12 @@ def build_registry() -> ToolRegistry:
         device_tools.register(reg)
         ui_tools.register(reg)
         input_tools.register(reg)
+
+    # Compound actions belong in core: they are how the agent should move by
+    # default, and gating them behind use_tools() would mean the expensive
+    # step-at-a-time path is the one it reaches for first.
+    with reg.pack("core"):
+        compound_tools.register(reg)
 
     with reg.pack("system"):
         system_tools.register(reg)
