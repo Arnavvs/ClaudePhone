@@ -108,15 +108,22 @@ Capability probe through the loopback shell (`claudephone tool privileges`):
 
 | Operation | Host over Wi-Fi | On-device |
 |---|---|---|
-| `adb shell` (trivial command) | ~90 ms | ~60 ms |
-| `phone_battery` via termux-api | 1598 ms | ~250 ms |
-| `privileges` (4 shell probes) | 356 ms | — |
+| `device_info` (4 getprops + 2 shells) | 257 ms | 295 ms |
+| `privileges` (4 shell probes) | 356 ms | 364 ms |
+| `phone_battery` via termux-api | 1598 ms | 1247 ms |
+| `phone_wifi` via termux-api | — | 1215 ms |
 | u2 connection warm-up | 1540 ms | ~1900 ms |
 
-`phone_battery` is the one place the transport genuinely dominates: from a host
-it is routed through `adb shell run-as com.termux`, which pays for process
-setup on every call. On-device it is a direct subprocess. **A 6× gap — the
-`phone` pack is the one that most rewards running on-device.**
+The `phone` pack was expected to be the one clear win for on-device execution,
+because from a host it is routed through `adb shell run-as com.termux` and pays
+process setup per call. It is a win, but a **1.3× one, not the 6× first
+guessed** — because the dominant cost is the `termux-*` CLI itself binding to
+the Android API service, which is paid identically either way. Roughly 1.2 s of
+the 1.25 s is Termux:API, not transport.
+
+This is the same lesson as §1 in a different place: on this stack, transport is
+almost never what costs you. Every on-device figure here is within ~15% of its
+host equivalent, and two of the four are slightly *worse*.
 
 ---
 
