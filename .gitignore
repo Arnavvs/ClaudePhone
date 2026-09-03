@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Runtime output: screenshots, recordings, scraped feeds, traces.
+artifacts/
+*.mp4
+*.png
+
+# Secrets and per-machine state.
+.env
+.claudephone/
+token
+*.session
+cookie.json

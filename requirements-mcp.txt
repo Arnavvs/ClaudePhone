@@ -1,0 +1,2 @@
+# Only needed to expose tools over MCP (laptop side).
+mcp[cli]>=2.1.1

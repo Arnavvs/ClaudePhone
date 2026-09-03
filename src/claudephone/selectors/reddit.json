@@ -1,0 +1,184 @@
+{
+  "app": "reddit",
+  "versions": {
+    "2026.33.2": {
+      "screens": {
+        "home_feed": {
+          "requires": [
+            "feed_lazy_column",
+            "post_unit"
+          ],
+          "fields": {
+            "post": {
+              "anchor": "post_unit",
+              "prefer": "desc",
+              "repeating": true,
+              "note": "Reddit packs a whole post into ONE composite label; sub-fields come from `composite` patterns, not separate anchors.",
+              "composite": {
+                "author": "^From ([^,]+),",
+                "age": "Posted ([^,]+?),",
+                "title": "(?:Posted [^,]+?|Promoted post), (.+?), (?:Image gallery, )?[\\d,]+ upvotes",
+                "upvotes": "([\\d,]+) upvotes",
+                "comments": "([\\d,]+) comments",
+                "reposts": "Reposted ([\\d,]+) times",
+                "shares": "Shared ([\\d,]+) times",
+                "views": "([\\d.,]+(?: thousand| million)?) views",
+                "promoted": "(Promoted post)"
+              }
+            },
+            "promoted_post": {
+              "anchor": "promoted_post_unit",
+              "prefer": "desc",
+              "repeating": true,
+              "optional": true,
+              "composite": {
+                "author": "^From ([^,]+),",
+                "title": "Promoted post, (.+?), (?:Image gallery, )?[\\d,]+ upvotes",
+                "upvotes": "([\\d,]+) upvotes",
+                "comments": "([\\d,]+) comments"
+              }
+            },
+            "search_box": {
+              "anchor": "main_top_app_bar_search",
+              "prefer": "desc",
+              "optional": true
+            }
+          },
+          "learned_by": "agent",
+          "note": "Runtime discovery: explore_screen -> diff_after_action(swipe_up) isolated post_unit as the changing content anchor; composite patterns validated on 3 real labels incl. a promoted post."
+        },
+        "post_comments": {
+          "requires": [
+            "comment_lazy_column"
+          ],
+          "fields": {},
+          "thread": {
+            "header_anchor": "comment_header",
+            "body_anchor": "comment_body_tag",
+            "footer_anchor": "fbp_comment_footer",
+            "ad_anchor": "conversation_screen_ad",
+            "composer_anchor": "reply_text_view",
+            "level_pattern": "Level (\\d+) comment",
+            "header_composite": {
+              "level": "Level (\\d+) comment",
+              "author": "comment by ([^,]+),",
+              "flair": "\\[([^\\]]+)\\]",
+              "age": "(\\d+ \\w+ ago)",
+              "votes": "(\\d+) votes?",
+              "moderator": "(Moderator)"
+            }
+          },
+          "readonly": true,
+          "readonly_reason": "composer at 'reply_text_view' must never be tapped",
+          "learned_by": "agent",
+          "known_issues": [
+            {
+              "id": "sheet_dismisses_on_swipe_down",
+              "symptom": "Swiping DOWN in the comment bottom-sheet dismisses it and returns to the feed.",
+              "cause": "Reddit comments render in a drag-dismiss bottom sheet.",
+              "guidance": "Only ever swipe UP when walking a thread. Never 'scroll to top' - re-open the post instead."
+            },
+            {
+              "id": "collapsed_replies_not_expanded",
+              "symptom": "Deep replies hidden behind 'more replies' controls are not collected; shows up as level jumps > 1.",
+              "cause": "collect_thread does not yet tap expansion controls.",
+              "guidance": "Treat nesting_gaps in the result as a completeness signal, not noise."
+            }
+          ],
+          "note": "requires is STRUCTURAL only (comment_lazy_column). comment_header is content and scrolls out of view; including it made screen detection fail at the top of the thread."
+        }
+      },
+      "all_ids": [
+        "actionBar_comment_button",
+        "actionBar_comment_icon",
+        "actionBar_repost_button",
+        "actionBar_repost_icon",
+        "actionBar_share_button",
+        "actionBar_share_icon",
+        "actionBar_vote_button_group",
+        "action_bar",
+        "action_bar_root",
+        "add_comment_button",
+        "battery",
+        "battery_charge_icon",
+        "battery_content",
+        "battery_text",
+        "box_content",
+        "child_screen_container",
+        "clock",
+        "comment_body_tag",
+        "comment_header",
+        "comment_layout",
+        "comment_lazy_column",
+        "container",
+        "content",
+        "content_root",
+        "content_video_view",
+        "drawer_layout",
+        "dynamic_icon_group",
+        "fbp_back_button",
+        "fbp_back_icon",
+        "fbp_comment_footer",
+        "fbp_header",
+        "fbp_image_screen",
+        "fbp_overflow_button",
+        "fbp_overflow_icon",
+        "fbp_screen",
+        "fbp_vertical_pager",
+        "feed_lazy_column",
+        "frame_container",
+        "gif_reply_button",
+        "home_screen_surface",
+        "image_reply_button",
+        "main_activity_navhost",
+        "mobile_combo",
+        "mobile_combo_real",
+        "mobile_signal",
+        "notificationIcons",
+        "notification_icon_area",
+        "post_footer",
+        "post_header",
+        "post_image_gallery",
+        "post_image_gallery_carousel",
+        "post_join_button",
+        "post_overflow",
+        "post_self_image",
+        "post_subreddit_icon",
+        "post_unit",
+        "promoted_post_unit",
+        "reply_text_view",
+        "screen_modal_backdrop",
+        "screen_modal_bottomsheet_layout",
+        "screen_modal_container",
+        "seeding_card_container",
+        "seedling_and_notification_container",
+        "sheet_indicator_view",
+        "snoovatar",
+        "stat_battery_view",
+        "statusIcons",
+        "status_bar",
+        "status_bar_container",
+        "status_bar_contents",
+        "status_bar_end_side_container",
+        "status_bar_end_side_content",
+        "status_bar_launch_animation_container",
+        "status_bar_start_side_container",
+        "status_bar_start_side_content",
+        "status_bar_start_side_except_heads_up",
+        "system_icons",
+        "user_avatar_header",
+        "user_image",
+        "video_metadata",
+        "video_text_content",
+        "voteButtonGroup_downvote",
+        "voteButtonGroup_label",
+        "voteButtonGroup_upvote",
+        "wifi_combo",
+        "wifi_group",
+        "wifi_inout",
+        "wifi_signal"
+      ],
+      "recorded_at": "2026-09-01T19:24:37.670193+00:00"
+    }
+  }
+}

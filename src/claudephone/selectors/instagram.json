@@ -1,0 +1,225 @@
+{
+  "app": "instagram",
+  "package": "com.instagram.android",
+  "note": "Selectors verified on a real device by walking the hierarchy with tools/map_fields.py, NOT by matching values to similarly-named ids by eye. Caption and audio sit on ANONYMOUS CHILDREN of their anchors; media_album_art_button carries the literal string 'Audio' and is deliberately not used.",
+  "versions": {
+    "440.1.0.46.86": {
+      "recorded_at": "2026-09-01T14:38:58.794774+00:00",
+      "device": "RMX3395 / Android 14",
+      "screens": {
+        "reels_viewer": {
+          "requires": [
+            "clips_viewer_view_pager",
+            "clips_media_component",
+            "clips_tab"
+          ],
+          "fields": {
+            "username": {
+              "anchor": "clips_author_username",
+              "prefer": "text",
+              "availability": "100%"
+            },
+            "caption": {
+              "anchor": "clips_caption_component",
+              "prefer": "desc",
+              "availability": "100%",
+              "note": "value is on an anonymous child of this container"
+            },
+            "audio": {
+              "anchor": "clips_author_info_component",
+              "prefer": "desc",
+              "availability": "78.6%",
+              "note": "anonymous child; NOT media_album_art_button, which is the literal string 'Audio'",
+              "optional": true
+            },
+            "like_count": {
+              "anchor": "like_count",
+              "prefer": "text",
+              "type": "number",
+              "availability": "100%",
+              "sample": "The like number is 65469. View likes."
+            },
+            "comment_count": {
+              "anchor": "comment_count",
+              "prefer": "text",
+              "type": "number",
+              "availability": "100%",
+              "sample": "Comment number is2191. View comments"
+            },
+            "repost_count": {
+              "anchor": "repost_count",
+              "prefer": "text",
+              "type": "number",
+              "sample": "Reposted 500 times"
+            },
+            "reshare_count": {
+              "anchor": "ufi_text_component",
+              "prefer": "text",
+              "type": "number",
+              "sample": "Reshare number is 16227"
+            },
+            "save_count": {
+              "anchor": "save_count",
+              "prefer": "text",
+              "type": "number",
+              "availability": "100%",
+              "sample": "Save number is 18778"
+            },
+            "playback_ms": {
+              "anchor": "scrubber",
+              "prefer": "text",
+              "type": "number",
+              "availability": "29%",
+              "note": "sparse; corroborating signal only, never a primary boundary signal",
+              "optional": true
+            },
+            "play_state": {
+              "anchor": "clips_pause_button",
+              "prefer": "desc",
+              "optional": true
+            },
+            "mute_state": {
+              "anchor": "clips_mute_button",
+              "prefer": "desc",
+              "optional": true
+            },
+            "follow_state": {
+              "anchor": "inline_follow_button",
+              "prefer": "text",
+              "optional": true
+            }
+          },
+          "identity_fields": [
+            "username",
+            "caption"
+          ],
+          "identity_note": "Audio is EXCLUDED from identity: it blanks momentarily during rendering and produced false boundaries when included.",
+          "known_issues": [
+            {
+              "id": "reels_overlay_missing",
+              "symptom": "First reel after entering the Reels tab renders with no engagement overlay: like/comment/save counts, caption and audio all absent while username and video are fine.",
+              "cause": "Instagram app bug. NOT selector drift - do not re-baseline on it.",
+              "detect": "screen==reels_viewer AND username present AND all engagement counts null",
+              "recovery": [
+                "swipe up to the next reel",
+                "reset_reels_feed() to re-enter the Reels tab"
+              ],
+              "reported_by": "operator, observed repeatedly on 440.1.0.46.86"
+            }
+          ]
+        },
+        "comments_sheet": {
+          "requires": [
+            "bottom_sheet_container",
+            "layout_comment_thread_edittext_multiline"
+          ],
+          "fields": {},
+          "note": "Comment rows have no per-row resource-id. Bodies appear as '<username> said <text>'; take the username from its own node and strip exactly that prefix rather than splitting on ' said '. Coverage is viewport-limited (7 of 2191 observed) and replies are collapsed behind 'View N more replies'.",
+          "readonly": true,
+          "readonly_reason": "comment_composer_* nodes are present; never interact with them"
+        }
+      },
+      "all_ids": [
+        "action_bar_root",
+        "action_bar_tab_layout",
+        "activity_and_camera_shared_views_main_container",
+        "battery",
+        "battery_charge_icon",
+        "battery_content",
+        "battery_text",
+        "bottom_sheet_camera_container",
+        "clips_action_bar_end_action_buttons",
+        "clips_action_bar_start_action_buttons",
+        "clips_attached_scrubber_container",
+        "clips_author_info_component",
+        "clips_author_profile_pic",
+        "clips_author_username",
+        "clips_bottom_legibility_gradient_component",
+        "clips_caption_component",
+        "clips_expanded_touch_view",
+        "clips_item_overlay_component",
+        "clips_linear_layout_container",
+        "clips_media_component",
+        "clips_media_info_component",
+        "clips_mute_button",
+        "clips_pause_and_mute_component",
+        "clips_pause_button",
+        "clips_single_media_component",
+        "clips_swipe_refresh_container",
+        "clips_tab",
+        "clips_ufi_component",
+        "clips_ufi_more_button_component",
+        "clips_video_container",
+        "clips_viewer_action_bar",
+        "clips_viewer_action_bar_title_container",
+        "clips_viewer_container",
+        "clips_viewer_video_layout",
+        "clips_viewer_view_pager",
+        "clock",
+        "comment_button",
+        "comment_count",
+        "container",
+        "content",
+        "direct_share_button",
+        "direct_tab",
+        "dynamic_icon_group",
+        "feed_tab",
+        "gesture_manager",
+        "icon",
+        "inline_follow_button",
+        "layout_container_center_right_coordinator_layout",
+        "layout_container_main",
+        "layout_container_main_panel",
+        "layout_container_main_wrapper",
+        "layout_container_right",
+        "layout_container_swipeable",
+        "like_button",
+        "like_count",
+        "media_album_art_button",
+        "mobile_combo",
+        "mobile_combo_real",
+        "mobile_signal",
+        "modal_container",
+        "navigationBarBackground",
+        "notificationIcons",
+        "notification_icon_area",
+        "overlay_layout_container",
+        "profile_tab",
+        "repost_count",
+        "root_clips_layout",
+        "save_button",
+        "save_count",
+        "scrubber",
+        "search_tab",
+        "seeding_card_container",
+        "seedling_and_notification_container",
+        "stat_battery_view",
+        "statusIcons",
+        "status_bar",
+        "status_bar_container",
+        "status_bar_contents",
+        "status_bar_end_side_container",
+        "status_bar_end_side_content",
+        "status_bar_launch_animation_container",
+        "status_bar_start_side_container",
+        "status_bar_start_side_content",
+        "status_bar_start_side_except_heads_up",
+        "swipe_navigation_container",
+        "swipeable_nav_view_pager_inner_recycler_view",
+        "swipeable_tab_view_pager",
+        "system_icons",
+        "tab_avatar",
+        "tab_bar",
+        "tab_bar_shadow",
+        "tab_icon",
+        "text1",
+        "ufi_text_component",
+        "wifi_combo",
+        "wifi_group",
+        "wifi_inout",
+        "wifi_signal",
+        "wrapper"
+      ]
+    }
+  }
+}
