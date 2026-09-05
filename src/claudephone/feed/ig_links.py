@@ -104,7 +104,7 @@ class ClipTail:
     """
 
     def __init__(self, serial: str = "", pattern: str = "clipsItemId"):
-        self._serial = serial or dev.DEFAULT_SERIAL
+        self._serial = serial or dev.default_serial()
         self._pattern = pattern
         self._items: deque = deque()
         self._lock = threading.Lock()
@@ -112,7 +112,7 @@ class ClipTail:
         self._thread: Optional[threading.Thread] = None
 
     def _cmd(self, *args: str) -> list:
-        cmd = [dev.ADB]
+        cmd = [dev.ADB()]
         if self._serial:
             cmd += ["-s", self._serial]
         return cmd + list(args)

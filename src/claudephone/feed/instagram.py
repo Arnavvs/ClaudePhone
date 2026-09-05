@@ -34,6 +34,8 @@ Everything that writes is two-phase (`apply=False` plans) and journalled, as in
 
 from __future__ import annotations
 
+import hashlib
+import re
 import time
 from typing import Optional
 
@@ -81,35 +83,80 @@ def ensure_reels(serial: str = "", settle: float = 5.0) -> dict:
     return {"on_reels": on_clips(_nodes(_raw_xml(serial)))}
 
 
-# Reels a pass must scroll straight past without opening anything. An ad's
-# controls are not a post's controls: on X, tapping a promoted post's body
-# opened the Play Store install sheet, and there is no reason to trust a
-# sponsored reel's sheet to behave like an organic one. "Suggested for you" and
-# follow-prompt interstitials are not reels at all - there is nothing to judge.
-_NOT_A_REEL = ("sponsored", "paid partnership", "suggested for you",
-               "sponsored ·", "promoted", "follow more accounts")
+# Slots a pass must scroll straight past without opening anything - but they
+# are two different things, and conflating them cost a whole collection run.
+#
+# An AD is a reel: it has an author, a More sheet, and controls we must not
+# trust (on X, tapping a promoted post's body opened the Play Store install
+# sheet, and a sponsored reel's sheet has no reason to behave like an organic
+# one). An INTERSTITIAL is not a reel at all - the full-screen "Instagram is
+# better with friends" follow carousel, "You're all caught up", a login nag.
+# There is no author, no sheet and nothing to judge.
+_AD_MARKERS = ("sponsored", "paid partnership", "sponsored ·", "promoted")
+_INTERSTITIAL_MARKERS = ("suggested for you", "follow more accounts",
+                         "better with friends", "all caught up")
 
+# "Suggested for you" is the ambiguous one, and on its own it is NOT evidence of
+# an ad. The follow interstitial displays it, so a walker that scored the string
+# alone reported that card as advertising - and when the advance swipe failed to
+# move the card (see ADVANCE_SWIPE) it reported it 42 times, returning a feed
+# that was "93% ads" and 3 reels. The author is the discriminator: no author,
+# no reel, and the slot is an interstitial whatever strings it carries.
+#
 # CAREFUL if this is ever reused for the HOME feed: there, "Suggested for you"
 # marks a RECOMMENDED post - precisely the ranked content whose Interested /
 # Not interested controls exist to be used, and skipping it would skip the only
 # thing worth shaping. In Reels the same string marks an interstitial with
 # nothing to judge. Same words, opposite meaning, different surface.
 
+# The union, kept under its old name for callers that only ever wanted "not
+# something to open".
+_NOT_A_REEL = _AD_MARKERS + _INTERSTITIAL_MARKERS
 
-def is_ad(serial: str = "", nodes: Optional[list] = None) -> dict:
-    """Whether the current reel is an ad or an interstitial rather than content."""
+_UNKNOWN = object()      # "the caller did not say", as opposed to "no author"
+
+
+def _author(nodes: list) -> Optional[str]:
+    """The username on screen, or None when this slot is not a reel at all."""
+    return next((n["label"] for n in nodes
+                 if n["rid"] == "clips_author_username" and n["label"]), None)
+
+
+def is_ad(serial: str = "", nodes: Optional[list] = None,
+          author=_UNKNOWN) -> dict:
+    """What the current slot is: a reel, an ad, or an interstitial.
+
+    `kind` is the answer; `is_ad` is kept for callers that only asked that, and
+    now means an ADVERTISEMENT rather than "anything unopenable" - an
+    interstitial answers False there and True in `skip`. Pass `author` (from
+    `reel_info`) to save this from re-deriving it; pass None to assert there
+    genuinely is none.
+    """
     if nodes is None:
         nodes = _nodes(_raw_xml(serial))
-    hits = []
+    if author is _UNKNOWN:
+        author = _author(nodes)
+    ad_hits, soft_hits = [], []
     for n in nodes:
         low = (n["label"] or "").strip().lower()
         if not low or len(low) > 60:
             continue
-        for mark in _NOT_A_REEL:
-            if mark in low:
-                hits.append(n["label"][:60])
-                break
-    return {"is_ad": bool(hits), "markers": hits[:4]}
+        if any(m in low for m in _AD_MARKERS):
+            ad_hits.append(n["label"][:60])
+        elif any(m in low for m in _INTERSTITIAL_MARKERS):
+            soft_hits.append(n["label"][:60])
+
+    if not author:
+        kind = "interstitial"
+    elif ad_hits or soft_hits:
+        # With an author present the ambiguous marker still buys a skip: the
+        # cost of passing an ad by is one row, the cost of opening one is real.
+        kind = "ad"
+    else:
+        kind = "reel"
+    return {"is_ad": kind == "ad", "kind": kind, "skip": kind != "reel",
+            "author": author, "markers": (ad_hits + soft_hits)[:4],
+            "ad_markers": ad_hits[:4], "interstitial_markers": soft_hits[:4]}
 
 
 # Affordances that sit inside the caption box and are not the caption. A long
@@ -314,9 +361,103 @@ def signal(kind: str = "not interested", apply: bool = False,
     return {"applied": True, "plan": plan}
 
 
-def next_reel(serial: str = "", settle: float = 1.4) -> None:
-    dev.shell("input swipe 540 1700 540 500 220", serial=serial)
+# The advance gesture, and why this geometry rather than the obvious one.
+#
+# The short swipe up the middle of the screen (540 1700 -> 540 500, 220ms) does
+# advance an ordinary reel - and is a NO-OP on the full-screen follow-suggestion
+# interstitial, where the UI fingerprint is byte-identical before and after.
+# That is not a slow screen or a missed frame; the card simply does not take
+# that gesture, and a walker built on it can swipe at one card until its budget
+# runs out. Four geometries were probed on RMX3395 (1080x2400) on 2026-09-05:
+#
+#     540 1700 -> 540  500, 220ms   short, centre     NO MOVEMENT
+#     540 2100 -> 540  200, 120ms   long, fast        moves
+#    1000 1900 -> 1000 400, 200ms   right edge        moves
+#      80 1900 ->   80 400, 200ms   left edge         moves
+#
+# The long fast one is the default because it clears the interstitial AND every
+# ordinary reel. The two edge swipes are the escalation in `unstick`: a screen
+# that ignored one gesture may still take another, and they cost a swipe each.
+#
+# All four are absolute pixels, as the rest of this module is. On a phone that
+# is not 1080x2400 the x values want scaling; the y values are already close
+# enough to the full height to survive it.
+ADVANCE_SWIPE = "input swipe 540 2100 540 200 120"
+RECOVER_SWIPES = ("input swipe 1000 1900 1000 400 200",     # right edge
+                  "input swipe 80 1900 80 400 200")         # left edge
+
+
+def next_reel(serial: str = "", settle: float = 1.4, cmd: str = "") -> None:
+    dev.shell(cmd or ADVANCE_SWIPE, serial=serial)
     time.sleep(settle)
+
+
+# Labels that tick on their own while nothing moves, and would otherwise make
+# every fingerprint unique: the video scrubber (SeekBar, playback position in
+# ms - it advances between any two dumps of a PLAYING reel), the status bar
+# clock, the battery. Matching on shape rather than resource-id catches the
+# engagement counts too, and does not depend on Instagram keeping its ids.
+_TICKING = re.compile(r"^[\d.,:%/ ]+$")
+
+
+def screen_id(serial: str = "", nodes: Optional[list] = None) -> str:
+    """A fingerprint of what is on screen, for telling "moved" from "stuck".
+
+    Labels only. Bounds would make every fingerprint unique the moment a video
+    frame nudged a control by a pixel, and the question here is not whether the
+    screen redrew - it is whether it is still showing the same thing.
+
+    Purely numeric labels are dropped, and that is the whole difficulty. A
+    reel keeps PLAYING while the walker works, and the scrubber publishes its
+    position in milliseconds as a label ("1039.0", "4031.0", "6680.0" on three
+    consecutive dumps of one motionless screen). Hash the raw label set and a
+    frozen reel looks new every time - the detector reports movement that never
+    happened, which is the failure it exists to catch. The interstitial that
+    caused all this has no video and so hashed identically, which is exactly
+    why the naive version looked correct when it was tested against that card
+    alone.
+
+    With the ticking labels dropped, one motionless reel hashes identically
+    across dumps and across a full More-sheet open and close, and two different
+    reels still differ - they differ by author and caption, not by digits.
+
+    One soft spot survives, and it is worth knowing rather than papering over:
+    the first dump after entering the Reels tab is taken while the reel is
+    still loading, so it can differ from the next dump of the SAME reel and
+    cost the detector its first comparison. A walker therefore wants a second
+    witness for IDENTITY (the logged shortcode, which `ig_collect` dedupes on)
+    alongside this one for MOTION.
+    """
+    if nodes is None:
+        nodes = _nodes(_raw_xml(serial))
+    labs = [n["label"].strip() for n in nodes if (n["label"] or "").strip()
+            and not _TICKING.match(n["label"].strip())]
+    return hashlib.md5("|".join(labs).encode("utf-8", "replace")).hexdigest()[:10]
+
+
+def unstick(serial: str = "", before: str = "", settle: float = 1.4) -> dict:
+    """Escalating recovery for a feed that did not advance.
+
+    Called when the fingerprint after an advance matches the one before it. The
+    ladder is cheapest-first: right-edge swipe, left-edge swipe, then re-enter
+    the Reels tab and advance again. `moved` says whether the screen is finally
+    showing something else; a False means every rung failed and the caller
+    should stop rather than spend the rest of its budget on one frozen card.
+    """
+    before = before or screen_id(serial)
+    tried = []
+    for cmd in RECOVER_SWIPES:
+        next_reel(serial, settle=settle, cmd=cmd)
+        tried.append(cmd)
+        now = screen_id(serial)
+        if now != before:
+            return {"moved": True, "tried": tried, "reentered": False,
+                    "screen": now}
+    ensure_reels(serial)
+    next_reel(serial, settle=settle)
+    now = screen_id(serial)
+    return {"moved": now != before, "tried": tried, "reentered": True,
+            "screen": now}
 
 
 def reels_pass(query: str, reels: int = 8, apply: bool = False,
@@ -343,19 +484,38 @@ def reels_pass(query: str, reels: int = 8, apply: bool = False,
            "scorer": "embedding" if rd.relevance_available() else "unavailable"}
     interested = not_interested = skipped = 0
 
-    ads = 0
+    ads = interstitials = stuck_events = 0
+    last_fp = None
     for i in range(reels):
         nodes = _nodes(_raw_xml(serial))
-        ad = is_ad(serial, nodes=nodes)
-        if ad["is_ad"]:
-            # Scroll past without opening anything. Never open an ad's sheet.
-            out["reels"].append({"action": "skipped (ad)",
-                                 "markers": ad["markers"]})
-            ads += 1
+        fp = screen_id(nodes=nodes)
+        # An unchanged screen means the last advance did not land. Left
+        # undetected it is invisible: the same slot is re-read and re-judged
+        # until the pass ends, and the pass reports a feed it never saw.
+        if fp == last_fp:
+            stuck_events += 1
+            rec = unstick(serial, before=fp)
+            nodes = _nodes(_raw_xml(serial))
+            fp = screen_id(nodes=nodes)
+            if not rec["moved"]:
+                out["stopped_early"] = "feed would not advance past slot %d" % i
+                break
+        last_fp = fp
+
+        info = reel_info(serial, nodes=nodes)
+        slot = is_ad(serial, nodes=nodes, author=info.get("author"))
+        if slot["skip"]:
+            # Scroll past without opening anything. Never open an ad's sheet,
+            # and an interstitial has no sheet to open.
+            out["reels"].append({"action": "skipped (%s)" % slot["kind"],
+                                 "markers": slot["markers"]})
+            if slot["kind"] == "ad":
+                ads += 1
+            else:
+                interstitials += 1
             next_reel(serial)
             continue
 
-        info = reel_info(serial, nodes=nodes)
         sheet = open_more(serial)
         rec = {"author": info.get("author"), "likes": info.get("likes"),
                "description": (sheet.get("description") or "")[:200],
@@ -399,6 +559,8 @@ def reels_pass(query: str, reels: int = 8, apply: bool = False,
     out["not_interested"] = not_interested
     out["skipped"] = skipped
     out["ads_skipped"] = ads
+    out["interstitials_skipped"] = interstitials
+    out["stuck_events"] = stuck_events
     if apply:
         _journal({"action": "ig_reels_pass", "query": query, "n": reels,
                   "interested": interested, "not_interested": not_interested})
