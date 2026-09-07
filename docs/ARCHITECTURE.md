@@ -230,6 +230,39 @@ a bad idea.
 argument comes back as `{"error": ..., "expected": <schema>}` so the model can
 correct itself on the next turn instead of the run dying.
 
+**Every run is written to disk.** `harness/recorder.py` appends each event to
+`artifacts/runs/<run_id>.jsonl` as it is yielded. The hook is in `run()` rather
+than in the CLI, so the CLI, `POST /task` and the laptop bridge behind it are
+all covered by one place, and a fourth entry point cannot forget it.
+
+Two details are the whole point of recording *here*:
+
+- **Before compaction.** The event is recorded as yielded, so the file keeps the
+  full screen dump the model was looking at when it chose. The conversation does
+  not — after six steps that result is a 220-character stub. The screen is the
+  input half of every training example; the stub is useless.
+- **It cannot break a run.** Every filesystem call is guarded, a failure latches
+  recording off for the rest of the run, and `start()` returns `None` on an
+  unwritable directory so the run proceeds unrecorded rather than failing. An
+  agent halfway through driving a real phone must not die because a disk filled.
+
+```bash
+claudephone runs                 # what it has done, newest first
+claudephone runs <run_id>        # replay one, step by step
+claudephone runs <run_id> --json # raw events, for a training set
+```
+
+The recorder knows what happened but not whether it was any good, so the outcome
+label is appended afterwards by whoever watched:
+
+```python
+from claudephone.harness import recorder
+recorder.label("20260905-213700-a3f2", success=True, note="two extra dumps")
+```
+
+Runs contain whatever the tools returned, including SMS, contacts and clipboard
+contents. `artifacts/` is gitignored. `CLAUDEPHONE_RECORD=0` turns it off.
+
 ---
 
 ## Two tool-calling conventions

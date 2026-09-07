@@ -90,6 +90,7 @@ claudephone doctor                      # check every link in the chain
 claudephone run "<goal>"                # give it a task, watch it work
 claudephone tools --pack phone          # browse the tool surface
 claudephone tool ui_dump --args '{"limit":10}'   # call one tool directly
+claudephone runs                        # every run it has ever done
 claudephone serve --host 0.0.0.0        # accept tasks from your laptop
 ```
 

@@ -216,6 +216,132 @@ def test_compaction():
           all("_clipped" not in m for m in agent._wire_messages()))
 
 
+def test_recorder():
+    print("\nrun recorder")
+    import shutil
+    import tempfile
+    from claudephone.harness import recorder
+
+    tmp = tempfile.mkdtemp(prefix="cp-runs-")
+    old_dir, old_flag = recorder.RUNS_DIR, os.environ.get("CLAUDEPHONE_RECORD")
+    recorder.RUNS_DIR = tmp
+    os.environ["CLAUDEPHONE_RECORD"] = "1"
+    try:
+        reg = demo_registry()
+        # Eight tool calls, so compaction (KEEP_FULL_RESULTS=6) definitely runs
+        # and clips the earliest results out of the conversation.
+        big = "X" * 900
+        replies = [
+            Reply(tool_calls=[{"id": "c%d" % i, "name": "echo",
+                               "args": {"value": big}}])
+            for i in range(8)
+        ]
+        replies.append(Reply(content="all done"))
+        agent = Agent(FakeChat(replies), reg)
+        events = list(agent.run("read the screen twice"))
+
+        run_ids = recorder.list_runs()
+        check("a run file was written", len(run_ids) == 1, str(run_ids))
+        rid = run_ids[0]
+        rows = recorder.load(rid)
+
+        check("first record is meta", rows[0].get("kind") == "meta")
+        check("meta carries the goal",
+              rows[0].get("goal") == "read the screen twice")
+        check("meta carries the model", rows[0].get("model") == "fake")
+        check("meta carries the budget",
+              (rows[0].get("budget") or {}).get("max_steps") == 30)
+        check("last record is end", rows[-1].get("kind") == "end")
+        check("outcome recorded", rows[-1].get("outcome") == "completed",
+              str(rows[-1].get("outcome")))
+
+        body = [r for r in rows if r.get("kind") not in ("meta", "end")]
+        check("one line per yielded event", len(body) == len(events),
+              "%d recorded vs %d yielded" % (len(body), len(events)))
+        check("every record is sequenced",
+              [r["seq"] for r in body] == list(range(1, len(body) + 1)))
+        check("every record is timestamped",
+              all(isinstance(r.get("at"), float) for r in body))
+        check("run_id reaches the consumer",
+              events[0].get("run_id") == rid, str(events[0].get("run_id")))
+
+        # The point of recording at yield time: the conversation no longer holds
+        # the early results, but the file does, whole.
+        clipped = [m for m in agent.messages
+                   if m.get("role") == "tool" and m.get("_clipped")]
+        check("compaction did clip the conversation", len(clipped) >= 2,
+              str(len(clipped)))
+        first = next(r for r in body if r.get("type") == "tool_result")
+        check("recorded result is NOT clipped",
+              len(json.dumps(first["result"])) > 900,
+              str(len(json.dumps(first["result"]))))
+
+        s = recorder.summarise(rid)
+        check("summary counts steps", s["steps"] == 8, str(s["steps"]))
+        check("summary keeps the answer", s["answer"] == "all done")
+        check("summary counts failures", s["failed_steps"] == 0)
+
+        # Labels are appended, so a run can carry more than one judgement.
+        recorder.label(rid, success=True, note="fine")
+        recorder.label(rid, success=False, note="reviewer disagreed")
+        check("labels append", len(recorder.summarise(rid)["labels"]) == 2)
+        check("label on a missing run errors",
+              "error" in recorder.label("nope", success=True))
+
+        # An abandoned run must still close its file.
+        gen = Agent(FakeChat([Reply(content="hi")]), demo_registry()).run("x")
+        next(gen)
+        gen.close()
+        rid2 = [r for r in recorder.list_runs() if r != rid][0]
+        rows2 = recorder.load(rid2)
+        check("abandoned run is closed", rows2[-1].get("kind") == "end")
+        check("abandonment is named",
+              rows2[-1].get("outcome") == "abandoned",
+              str(rows2[-1].get("outcome")))
+
+        os.environ["CLAUDEPHONE_RECORD"] = "0"
+        before = len(recorder.list_runs())
+        list(Agent(FakeChat([Reply(content="hi")]), demo_registry()).run("y"))
+        check("recording can be turned off",
+              len(recorder.list_runs()) == before)
+    finally:
+        recorder.RUNS_DIR = old_dir
+        if old_flag is None:
+            os.environ.pop("CLAUDEPHONE_RECORD", None)
+        else:
+            os.environ["CLAUDEPHONE_RECORD"] = old_flag
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_recorder_never_breaks_a_run():
+    print("\nrecorder failure is contained")
+    from claudephone.harness import recorder
+
+    old_dir = recorder.RUNS_DIR
+    old_flag = os.environ.get("CLAUDEPHONE_RECORD")
+    os.environ["CLAUDEPHONE_RECORD"] = "1"   # or this proves nothing
+    # A path that cannot be created: an existing FILE used as a directory.
+    import tempfile
+    fd, blocker = tempfile.mkstemp(prefix="cp-not-a-dir-")
+    os.close(fd)
+    recorder.RUNS_DIR = os.path.join(blocker, "runs")
+    try:
+        events = list(Agent(FakeChat([Reply(content="done")]),
+                            demo_registry()).run("goal"))
+        check("run completes with an unwritable runs dir", len(events) >= 2)
+        check("final event still delivered",
+              events[-1].get("type") == "final")
+        check("no run_id claimed when nothing was written",
+              "run_id" not in events[0])
+    finally:
+        recorder.RUNS_DIR = old_dir
+        if old_flag is None:
+            os.environ.pop("CLAUDEPHONE_RECORD", None)
+        else:
+            os.environ["CLAUDEPHONE_RECORD"] = old_flag
+        os.unlink(blocker)
+
+
 def test_real_registry():
     print("\nreal registry")
     from claudephone.agent import OUTBOUND, build_registry
@@ -248,8 +374,13 @@ def test_real_registry():
 
 
 if __name__ == "__main__":
+    # Tests drive real Agent.run() calls, which now record. Off by default so a
+    # test sweep never lands junk in the operator's artifacts/runs/; the two
+    # recorder tests below switch it back on against a temp directory.
+    os.environ["CLAUDEPHONE_RECORD"] = "0"
     for fn in (test_schema, test_call, test_packs, test_json_protocol,
                test_loop, test_budget, test_policy, test_compaction,
+               test_recorder, test_recorder_never_breaks_a_run,
                test_real_registry):
         fn()
     print("\n" + str(PASS) + " passed, " + str(FAIL) + " failed")

@@ -58,6 +58,8 @@ def print_event(ev: dict) -> None:
                 + "  ·  " + str(ev.get("tools_loaded")) + " tools ("
                 + ", ".join(ev.get("packs", [])) + ")  ·  "
                 + ev.get("tool_convention", "") + " tool calls", DIM))
+        if ev.get("run_id"):
+            print(c("  recording " + ev["run_id"], DIM))
     elif kind == "thought":
         text = (ev.get("content") or "").strip()
         if text:
@@ -250,6 +252,74 @@ def cmd_doctor(a) -> int:
     return 0 if ok else 1
 
 
+def cmd_runs(a) -> int:
+    """Browse recorded runs. Every run is written by harness/recorder.py."""
+    from .harness import recorder
+
+    if a.run_id:
+        rows = recorder.load(a.run_id)
+        if not rows:
+            print(c("no such run: " + a.run_id, RED))
+            return 1
+        if a.json:
+            for r in rows:
+                print(json.dumps(r, default=str))
+            return 0
+        s = recorder.summarise(a.run_id)
+        print(c(s["run_id"], BOLD) + c("  " + (s.get("started") or ""), DIM))
+        print(c("  goal   ", DIM) + (s.get("goal") or ""))
+        print(c("  model  ", DIM) + str(s.get("provider")) + " / "
+              + str(s.get("model")))
+        bits = [str(s.get("outcome"))]
+        if s.get("stopped_by"):
+            bits.append("stopped_by=" + str(s["stopped_by"]))
+        if s.get("seconds") is not None:
+            bits.append(str(s["seconds"]) + "s")
+        if s.get("tokens") is not None:
+            bits.append(str(s["tokens"]) + " tokens")
+        print(c("  result ", DIM) + "  ".join(bits))
+        print()
+        for r in rows:
+            if r.get("type") == "tool_call":
+                args = ", ".join(k + "=" + json.dumps(v, default=str)[:40]
+                                 for k, v in (r.get("args") or {}).items())
+                print(c("  " + str(r.get("step")) + ". ", DIM)
+                      + c(r.get("tool", ""), CYAN) + c("(" + args + ")", DIM))
+            elif r.get("type") == "tool_result":
+                tick = c("✓", GREEN) if r.get("ok") else c("✗", RED)
+                print("     " + tick + " "
+                      + _summarise(r.get("result") or {}))
+            elif r.get("type") == "thought":
+                for line in (r.get("content") or "").strip().splitlines():
+                    print(c("  │ ", DIM) + line)
+        if s.get("answer"):
+            print("\n" + s["answer"])
+        for lab in s.get("labels") or []:
+            print(c("\n  label: " + json.dumps(
+                {k: v for k, v in lab.items()
+                 if k not in ("kind", "at")}, default=str), YELLOW))
+        return 0
+
+    ids = recorder.list_runs(limit=a.limit)
+    if not ids:
+        print(c("no runs recorded yet in " + recorder.RUNS_DIR, DIM))
+        return 0
+    for rid in ids:
+        s = recorder.summarise(rid)
+        if s.get("error"):
+            print(c(rid + "  " + s["error"], RED))
+            continue
+        bad = s.get("failed_steps") or 0
+        flag = (c(" " + str(bad) + " failed", RED) if bad else "")
+        print(c(rid, CYAN) + c("  " + str(s.get("steps")) + " steps  "
+                               + str(s.get("seconds") or "?") + "s  "
+                               + str(s.get("outcome")), DIM) + flag)
+        print("   " + (s.get("goal") or "")[:90])
+    print(c("\n" + str(len(ids)) + (" run" if len(ids) == 1 else " runs")
+            + " in " + recorder.RUNS_DIR, DIM))
+    return 0
+
+
 def cmd_mcp(a) -> int:
     """Serve the same tools over MCP stdio, for a laptop Claude Code session."""
     from .mcp_server import main as mcp_main
@@ -298,6 +368,14 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser("doctor", help="check the whole setup end to end")
     d.add_argument("--provider", default="")
     d.set_defaults(fn=cmd_doctor)
+
+    n = sub.add_parser("runs", help="list or replay recorded runs")
+    n.add_argument("run_id", nargs="?", default="",
+                   help="show one run; omit to list")
+    n.add_argument("--limit", type=int, default=25)
+    n.add_argument("--json", action="store_true",
+                   help="with a run_id, dump its raw events")
+    n.set_defaults(fn=cmd_runs)
 
     m = sub.add_parser("mcp", help="serve tools over MCP stdio")
     m.set_defaults(fn=cmd_mcp)

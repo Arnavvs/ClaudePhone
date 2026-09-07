@@ -15,6 +15,9 @@ Three things here are not standard loop boilerplate and are worth knowing about:
   set to ask, allow or deny without touching tool code.
 * **Budgets are enforced, not suggested.** Steps, wall-clock and token spend
   all terminate the run, and the reason is reported.
+* **Every run is written to disk** as it happens, by `harness/recorder.py`.
+  Recording sits in `run()` so all three entry points get it for free, and it
+  captures each event before compaction clips it.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Optional
 
+from . import recorder
 from .models import Chat, ModelError
 from .prompt import build_system
 from .registry import ToolRegistry
@@ -121,6 +125,47 @@ class Agent:
     # -- the loop ------------------------------------------------------------
 
     def run(self, goal: str) -> Iterator[dict]:
+        """Drive the goal to completion, recording the run as it happens.
+
+        The recording wrapper lives here rather than in `cli.py` because every
+        entry point - CLI, `POST /task`, and the laptop bridge behind it - comes
+        through this generator. Hooking it here covers all of them and cannot be
+        forgotten when a fourth is added.
+
+        Events are recorded *as yielded*, which is before `_compact()` clips
+        them, so the file keeps the screens the model actually saw rather than
+        the stubs the conversation ends up holding.
+        """
+        rec = recorder.start(goal, self)
+        if rec is None:
+            yield from self._run(goal)
+            return
+
+        outcome = "abandoned"
+        try:
+            for ev in self._run(goal):
+                kind = ev.get("type")
+                if kind == "start":
+                    # Tell the consumer where this run is being written, so a
+                    # CLI can print it and a streaming client can reference it.
+                    ev = dict(ev, run_id=rec.run_id, run_path=rec.path)
+                rec.event(ev)
+                if kind == "final":
+                    outcome = ev.get("stopped_by") or "completed"
+                elif kind == "error":
+                    outcome = "error"
+                yield ev
+        except GeneratorExit:
+            # The consumer stopped reading - a disconnected HTTP client, or a
+            # Ctrl-C in the CLI. That is abandonment, not a crash.
+            raise
+        except BaseException as e:
+            outcome = "exception: " + type(e).__name__ + ": " + str(e)[:160]
+            raise
+        finally:
+            rec.close(outcome)
+
+    def _run(self, goal: str) -> Iterator[dict]:
         started = time.time()
         convention = self.chat.tool_convention
         self.messages = [
