@@ -208,22 +208,61 @@ def app_version(package: str, serial: str = "") -> Optional[str]:
     return None
 
 
+def _activity_from(line: str) -> Optional[dict]:
+    """Pull `package/activity` out of a dumpsys line, whatever wraps it.
+
+    The value sits inside `ActivityRecord{...}` or `Window{...}`, so the braces
+    are split off before tokenising - otherwise the closing brace rides along on
+    the activity name.
+    """
+    for tok in line.replace("{", " ").replace("}", " ").split():
+        if "/" not in tok or "." not in tok:
+            continue
+        pkg, _, act = tok.partition("/")
+        if not pkg or "." not in pkg:
+            continue
+        return {"package": pkg, "activity": pkg + act if act.startswith(".")
+                else act}
+    return None
+
+
+# Which dumpsys line names the foreground activity varies by Android version
+# AND by OEM, so probing one pattern is not enough:
+#
+#   realme UI V14 / Android 14   topResumedActivity
+#   Samsung One UI 4 / Android 12   mResumedActivity and ResumedActivity,
+#                                   but NEVER topResumedActivity
+#
+# Measured on SM-M215F, 2026-09-08. The single-pattern grep this replaced
+# matched nothing there and returned {"package": None} *silently*, which then
+# disabled screen detection, the selector registry, drift checking and
+# extract_fields - the caller was told the screen was unrecognised rather than
+# that the probe had failed. Fail loud beats fail quiet: `_probe` is reported
+# so a None answer can be told apart from an unsupported dumpsys format.
+_FG_PROBES = (
+    ("activities", "dumpsys activity activities | grep -m1 -E "
+                   "'topResumedActivity|mResumedActivity|ResumedActivity'"),
+    ("window", "dumpsys window | grep -m1 -E 'mCurrentFocus|mFocusedApp'"),
+)
+
+
 def foreground(serial: str = "") -> dict:
-    """Currently resumed package/activity."""
-    try:
-        out = shell(
-            "dumpsys activity activities | grep -m1 topResumedActivity",
-            serial=serial,
-        )
-    except DeviceError:
-        return {"package": None, "activity": None}
-    for tok in out.split():
-        if "/" in tok and "." in tok:
-            pkg, _, act = tok.partition("/")
-            if act.startswith("."):
-                act = pkg + act
-            return {"package": pkg, "activity": act}
-    return {"package": None, "activity": None}
+    """Currently resumed package/activity.
+
+    Falls back through the probes above, so an OEM that renames the line costs
+    one extra round trip rather than silently breaking every app-aware feature.
+    """
+    for name, cmd in _FG_PROBES:
+        try:
+            out = shell(cmd, serial=serial)
+        except DeviceError:
+            continue
+        for line in out.splitlines():
+            hit = _activity_from(line)
+            if hit:
+                hit["_probe"] = name
+                return hit
+    return {"package": None, "activity": None, "_probe": None}
 
 
 # --- uiautomator2 -----------------------------------------------------------

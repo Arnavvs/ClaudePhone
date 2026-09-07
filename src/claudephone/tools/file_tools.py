@@ -59,7 +59,12 @@ def register(reg) -> None:
                     rows.append({"name": n})
             return {"path": path, "route": "local", "count": len(names),
                     "entries": rows}
-        out = dev.shell("ls -la " + shlex.quote(path), check=False)
+        # -L dereferences symlinks. Without it this tool is wrong on its own
+        # DEFAULT argument: /sdcard is a symlink to /storage/self/primary on
+        # every Android device, so `ls -la /sdcard` prints the one-line link
+        # rather than the directory. Verified on SM-M215F, 2026-09-08. -L still
+        # behaves for a plain file, so there is no case to special-case.
+        out = dev.shell("ls -laL " + shlex.quote(path), check=False)
         lines = [l for l in out.splitlines() if l.strip()][:limit]
         return {"path": path, "route": "adb", "entries": lines}
 
