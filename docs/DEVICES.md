@@ -105,9 +105,30 @@ three now report signature `db86cf3c`, matching the realme exactly, and
 count as the realme), `python android-tools termux-api git python-lxml
 python-pillow` installed, and adbd switched to TCP with `adb tcpip 5555`.
 
-Remaining: the loopback `adb connect 127.0.0.1:5555` reaches adbd but sits at
-`unauthorized` until the on-device *Allow USB debugging?* dialog is accepted.
-That is a one-time human tap by design and is deliberately not scripted.
+The loopback needed the on-device *Allow USB debugging?* dialog accepted — one
+human tap, by design, deliberately not scripted. Once accepted:
+
+```
+$ adb -s 127.0.0.1:5555 shell id          # from inside Termux
+uid=2000(shell) gid=2000(shell) groups=2000(shell),1004(input),1007(log),...
+```
+
+The privilege gap, measured on this device:
+
+| Command | As Termux uid 10318 | Through the loopback |
+|---|---|---|
+| `input keyevent 0` | DENIED | ALLOWED |
+| `settings get system screen_brightness` | DENIED | `81` |
+| `uiautomator dump` | — | 20,989 bytes |
+
+`claudephone doctor` now passes on the phone itself — `running on phone: True`,
+adb from `$PREFIX/bin`, loopback `device`, uiautomator2 reading, 144 tools
+registered. Only `OPENROUTER_API_KEY` is outstanding, which is the same gap as
+on the realme.
+
+**Gotcha worth keeping:** `adb shell` reads stdin, so inside a Termux script it
+swallows the rest of the script and everything after the first call silently
+vanishes. Redirect it: `adb ... shell "cmd" </dev/null`.
 
 **Rule:** `run-as` availability is a property of the *install source*, not of
 the OEM. Probe it rather than assuming it.
@@ -156,15 +177,26 @@ differently and quietly.
 
 ## 4. Screen reading — comparable, slightly slower
 
-| | realme (Wi-Fi) | realme (on-device) | Samsung (USB) |
-|---|---|---|---|
-| u2 `dump_hierarchy` | 220 ms | 306 ms | **296 ms** (median of 6) |
-| Raw XML | 27.4 KB | 27.9 KB | 48.1 KB (launcher) |
+| | realme (Wi-Fi) | realme (on-device) | Samsung (USB) | Samsung (on-device) |
+|---|---|---|---|---|
+| u2 `dump_hierarchy` | 220 ms | 306 ms | **296 ms** | **400 ms** |
+| Ratio on-device : host | — | 1.39× | — | **1.35×** |
+| Raw XML | 27.4 KB | 27.9 KB | 48.1 KB | 49.5 KB |
 
-The Exynos 9611 is a much weaker SoC than the Dimensity 920, yet the read cost
-is within ~35% of the realme's fastest path — more evidence for the conclusion
-in [BENCHMARKS.md](BENCHMARKS.md) that the round trip dominates and the device
-is not the bottleneck.
+All medians of 6 warm reads.
+
+**The second device reproduces the finding that shaped this project.** On the
+realme, running on-device was 1.39× *slower* per read than driving it from the
+laptop. On the Samsung, over a different transport and a much weaker SoC, it is
+1.35× slower — the same ratio. That the two agree this closely is stronger
+evidence than either measurement alone: on-device execution is not a latency
+optimisation on any of the hardware tested, and the argument for it remains
+autonomy and turn economics, exactly as [ARCHITECTURE.md](ARCHITECTURE.md#delegate-vs-proxy)
+claims.
+
+The Exynos 9611 is a much weaker SoC than the Dimensity 920, yet the host-driven
+read cost is within ~35% of the realme's fastest path — more evidence that the
+round trip dominates and the device is not the bottleneck.
 
 `ui.parse` reduced a 48.1 KB hierarchy to 40 elements and **3.8 KB** of compact
 JSON — a 12.6× reduction on a screen it had never seen.
