@@ -43,10 +43,22 @@ PERMISSIONS = {
 
 
 def _termux(cmd: str, timeout: int = 60) -> tuple[int, str, str]:
-    """Run a termux-* command, on-device directly or via run-as from a host."""
+    """Run a termux-* command, on-device directly or via run-as from a host.
+
+    Returns a timeout as `(124, "", ...)` rather than raising. Several
+    `termux-*` binaries block indefinitely when their Termux:API service never
+    answers - `termux-notification-list` without notification-listener access is
+    the one that found this - and a raised TimeoutExpired surfaced to the model
+    as a 900-character subprocess traceback naming the base64 payload, which
+    says nothing about the cause. 124 is what `timeout(1)` uses.
+    """
     if dev.on_device():
-        p = subprocess.run(["bash", "-lc", cmd], capture_output=True, text=True,
-                           timeout=timeout, encoding="utf-8", errors="replace")
+        try:
+            p = subprocess.run(["bash", "-lc", cmd], capture_output=True,
+                               text=True, timeout=timeout, encoding="utf-8",
+                               errors="replace")
+        except subprocess.TimeoutExpired:
+            return 124, "", "timed out after " + str(timeout) + "s"
         return p.returncode, p.stdout, p.stderr
     prelude = (
         "export PREFIX=" + PREFIX + "; export HOME=" + HOME +
@@ -56,8 +68,14 @@ def _termux(cmd: str, timeout: int = 60) -> tuple[int, str, str]:
     )
     b64 = base64.b64encode((prelude + cmd).encode()).decode()
     inner = ("echo " + b64 + " | toybox base64 -d | " + PREFIX + "/bin/bash")
-    out = dev.adb("shell", "run-as", "com.termux", "sh", "-c", shlex.quote(inner),
-                  timeout=timeout, check=False)
+    try:
+        out = dev.adb("shell", "run-as", "com.termux", "sh", "-c",
+                      shlex.quote(inner), timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        return 124, "", "timed out after " + str(timeout) + "s"
+    # NOTE: rc is 0 here regardless of what ran, because `adb shell` does not
+    # relay the remote exit status on this path. Callers cannot tell a failure
+    # from success by rc alone - judge by the output.
     return 0, out, ""
 
 
@@ -178,12 +196,35 @@ def register(reg) -> None:
     @reg.tool(description="List the notifications currently in the shade, with "
                           "their package, title and text. Read-only.")
     def phone_notifications(limit: int = 30) -> dict:
-        data, err = _json("termux-notification-list")
+        # `termux-notification-list` blocks until its listener service answers,
+        # and if Termux:API does not hold notification-listener access nothing
+        # ever answers - so the tool hung for the full subprocess timeout and
+        # then reported a TimeoutExpired traceback, which says nothing about the
+        # actual cause. Measured on SM-M215F, 2026-09-08: even after granting
+        # access via `settings put secure enabled_notification_listeners` it
+        # returned empty, while the dumpsys-backed `notifications` tool read all
+        # six notifications on the same device.
+        #
+        # So: check the grant first, cap the wait, and always name the tool that
+        # does work rather than leaving the agent to guess.
+        alt = ("use the `notifications` tool instead - it reads the same data "
+               "via dumpsys, needs no Termux:API grant, and is faster")
+        try:
+            listeners = dev.shell(
+                "settings get secure enabled_notification_listeners",
+                check=False) or ""
+        except Exception:
+            listeners = ""
+        if "com.termux.api" not in listeners:
+            return {"error": "Termux:API does not hold notification-listener "
+                             "access, so this would block with no result",
+                    "fix": "Settings > Notifications > Notification access > "
+                           "Termux:API",
+                    "use_instead": alt}
+        data, err = _json("termux-notification-list", timeout=20)
         if data is None:
-            return {"error": err or "no output",
-                    "permission_hint": "Notification access must be enabled by "
-                                       "hand: Settings > Notifications > "
-                                       "Notification access > Termux:API."}
+            return {"error": err or "no output from termux-notification-list",
+                    "use_instead": alt}
         rows = data if isinstance(data, list) else [data]
         return {"count": len(rows), "notifications": rows[:limit]}
 
@@ -324,8 +365,22 @@ def register(reg) -> None:
 
     @reg.tool(description="Read the phone's clipboard.")
     def phone_clipboard_get() -> dict:
+        # Android 10+ only lets the FOREGROUND app read the clipboard, and
+        # Termux:API is not foreground when driven over run-as - so this returns
+        # an empty string that is indistinguishable from a genuinely empty
+        # clipboard. Measured on SM-M215F, 2026-09-08: phone_clipboard_set wrote
+        # "claudephone-test" and reported success, this read back "", and the
+        # u2-backed `clipboard_get` read the value correctly.
         rc, out, err = _termux("termux-clipboard-get")
-        return {"clipboard": (out or "").rstrip("\n")}
+        text = (out or "").rstrip("\n")
+        if text:
+            return {"clipboard": text}
+        return {"clipboard": "",
+                "warning": "empty - on Android 10+ this may mean the read was "
+                           "refused rather than that the clipboard is empty; "
+                           "Termux:API can only read it while in the foreground",
+                "use_instead": "the `clipboard_get` tool reads it through "
+                               "uiautomator2 and is not subject to this limit"}
 
     @reg.tool(description="Set the phone's clipboard contents.")
     def phone_clipboard_set(text: str) -> dict:

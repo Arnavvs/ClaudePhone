@@ -83,9 +83,9 @@ uid 2000 — depends on how Termux was installed. The two handsets differ:
 | Termux version | 0.118.3 | 0.118.3 |
 | Signing cert | `db86cf3c` (GitHub) | `7c3fcce` (**F-Droid**) |
 | `flags=` | includes `DEBUGGABLE` | `HAS_CODE ALLOW_CLEAR_USER_DATA` only |
-| `run-as com.termux` | works | **`package not debuggable`** |
-| Bootstrap unpacked | 389 binaries | **0 — never opened** |
-| adbd on TCP | yes | not listening |
+| `run-as com.termux` | works | ~~`package not debuggable`~~ **fixed** |
+| Bootstrap unpacked | 389 binaries | ~~0~~ **389 — fixed** |
+| adbd on TCP | yes | ~~not listening~~ **5555 — fixed** |
 
 Consequences on the Samsung as it stands:
 
@@ -96,13 +96,63 @@ Consequences on the Samsung as it stands:
   *inside* Termux, not `run-as`), but Termux has never been opened, so there is
   no bootstrap and no `adb` binary to run.
 
-To bring this device to parity: uninstall the F-Droid Termux, install the
-**GitHub release** build plus matching add-ons, open it once, then run
-`scripts/bootstrap_phone.sh`. Add-ons only bind to a Termux with a matching
-signing key, so all four must come from the same source.
+**Resolved 2026-09-08.** The F-Droid trio was uninstalled and replaced with the
+official GitHub releases — `termux-app v0.118.3+github-debug_arm64-v8a`,
+`termux-api v0.53.0+github.debug`, `termux-boot v0.8.1+github.debug`, the
+add-on checksums verified against the published `checksums-sha256.txt`. All
+three now report signature `db86cf3c`, matching the realme exactly, and
+`com.termux` carries `DEBUGGABLE`. Termux was opened once (389 binaries, same
+count as the realme), `python android-tools termux-api git python-lxml
+python-pillow` installed, and adbd switched to TCP with `adb tcpip 5555`.
+
+Remaining: the loopback `adb connect 127.0.0.1:5555` reaches adbd but sits at
+`unauthorized` until the on-device *Allow USB debugging?* dialog is accepted.
+That is a one-time human tap by design and is deliberately not scripted.
 
 **Rule:** `run-as` availability is a property of the *install source*, not of
 the OEM. Probe it rather than assuming it.
+
+## 3a. `settings put` works here — it does not on the realme
+
+The realme has `WRITE_SECURE_SETTINGS` revoked from uid 2000 in **all three**
+scopes (global, secure, system), which blocked animation-scale, stay-awake and
+anything else settable from the shell. One UI 4 allows it:
+
+```
+settings put global verifier_verify_adb_installs 0   -> works
+settings put global package_verifier_user_consent -1 -> works
+settings put secure enabled_notification_listeners … -> works
+```
+
+This matters more than a convenience. Play Protect was silently holding the
+`adb install` of Termux open indefinitely — no error, no visible dialog, the
+command simply never returned. Turning the adb verifier off made the same
+install succeed in seconds. **A hanging `adb install` is Play Protect until
+proven otherwise.**
+
+**Rule:** treat `settings put` as a probed capability, not a given. Where it
+works, setup can be fully scripted; where it does not, the operator has to tap.
+
+## 3b. Termux:API tools fail where the adb equivalents work
+
+Two `phone_*` tools were broken on this device, both silently, and both have a
+`system`-pack equivalent that worked perfectly on the same phone:
+
+| Broken | Why | Works instead |
+|---|---|---|
+| `phone_notifications` | `termux-notification-list` blocks until its listener answers. Termux:API had no notification-listener access, so nothing ever answered — the tool hung for the full 60 s then returned a subprocess traceback. Granting access via `settings put secure enabled_notification_listeners` did **not** fix it; it then returned empty. | `notifications` (dumpsys) — read all 6 |
+| `phone_clipboard_get` | Android 10+ restricts clipboard reads to the **foreground** app, and Termux:API is not foreground under `run-as`. Returned `""`, indistinguishable from an empty clipboard. `phone_clipboard_set` had reported success. | `clipboard_get` (uiautomator2) — read the value back correctly |
+
+Both now fail loud and name the tool that works. `_termux()` also no longer
+raises `TimeoutExpired`: it returns `(124, "", "timed out after Ns")`, because a
+raised timeout reached the model as a 900-character traceback quoting the base64
+payload, which said nothing about the cause. That restores the project's own
+"errors are returned, not raised" rule for the whole `phone` pack.
+
+**Rule:** where a capability has both a Termux:API and an adb/u2 path, prefer
+the adb path and treat Termux:API as the fallback — it depends on a service
+binding, a runtime permission *and* a special access grant, each of which fails
+differently and quietly.
 
 ## 4. Screen reading — comparable, slightly slower
 
