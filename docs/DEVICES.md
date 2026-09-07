@@ -87,13 +87,13 @@ uid 2000 — depends on how Termux was installed. The two handsets differ:
 | Bootstrap unpacked | 389 binaries | ~~0~~ **389 — fixed** |
 | adbd on TCP | yes | ~~not listening~~ **5555 — fixed** |
 
-Consequences on the Samsung as it stands:
+What that cost, before it was fixed:
 
-- **`run-as` fails**, so every host-side `phone_*` tool is unavailable — they
+- **`run-as` failed**, so every host-side `phone_*` tool was unavailable — they
   route through `adb shell run-as com.termux` when off-device.
-- `tmx.ps1` cannot work.
-- On-device mode is not blocked by the signature (the loopback trick needs adb
-  *inside* Termux, not `run-as`), but Termux has never been opened, so there is
+- `tmx.ps1` could not work.
+- On-device mode was not blocked by the signature (the loopback trick needs adb
+  *inside* Termux, not `run-as`), but Termux had never been opened, so there was
   no bootstrap and no `adb` binary to run.
 
 **Resolved 2026-09-08.** The F-Droid trio was uninstalled and replaced with the
