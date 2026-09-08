@@ -25,12 +25,13 @@ from .tools.apps import instagram_comments as ig_comments
 from .tools.apps import instagram_profile as ig_profile
 from .tools.apps import instagram_web as ig_web
 from .tools.apps import reel_capture as ig_capture
+from .tools.apps import telegram as tg_tools
 from .tools.apps import twitter as x_tools
 from .tools.apps import x_feed as x_feed_tools
 
 # Reaches other people, or costs money. Allowed only when the operator says so
 # by name (`--allow phone_sms_send`). Being dangerous is not enough for these.
-OUTBOUND = {"phone_sms_send", "phone_call"}
+OUTBOUND = {"phone_sms_send", "phone_call", "tg_send", "tg_reply"}
 
 
 def build_registry() -> ToolRegistry:
@@ -81,6 +82,12 @@ def build_registry() -> ToolRegistry:
     with reg.pack("instagram_web"):
         ig_web.register(reg)
         ig_web.register_session_import(reg)
+
+    with reg.pack("telegram"):
+        tg_tools.register(reg)
+        tg_tools.register_membership(reg)
+        tg_tools.register_search_in_chat(reg)
+        tg_tools.register_outbound(reg)
 
     with reg.pack("x"):
         x_tools.register(reg)

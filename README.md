@@ -134,15 +134,16 @@ The saving is the expensive turns, not the network —
 
 ## The tool surface
 
-**132 tools in 10 packs.** Only `core` (19) is loaded at the start of a run; the
-agent widens its own surface with `use_tools(pack)`. Exposing all 132 would cost
-~12,200 tokens of schema **per turn** against ~1,600 for core.
+**157 tools in 11 packs.** Only `core` (31) is loaded at the start of a run; the
+agent widens its own surface with `use_tools(pack)`. Exposing all 157 would cost
+~14,600 tokens of schema **per turn** against ~2,600 for core.
 
 | Pack | Tools | What |
 |---|---|---|
-| `core` | 19 | Screen reading, tapping, typing, app launch, tool discovery |
+| `core` | 31 | Screen reading, tapping, typing, app launch, tool discovery |
 | `phone` | 29 | SMS, calls, camera, GPS, sensors, torch, TTS, notifications, Wi-Fi |
 | `x` | 23 | X/Twitter timelines, search, feed-shaping controls |
+| `telegram` | 13 | Channels and chats: read, search, join, reply |
 | `system` | 14 | Battery, network, storage, clipboard, waiting |
 | `instagram` | 11 | Profiles, grids, reels, comment threads |
 | `learn` | 10 | Teach the agent an app it has never seen |
@@ -151,7 +152,9 @@ agent widens its own surface with `use_tools(pack)`. Exposing all 132 would cost
 | `instagram_capture` | 7 | Segmented reel recording via MediaProjection |
 | `shell` | 4 | Arbitrary commands at both privilege levels |
 
-Full catalogue: **[docs/TOOLS.md](docs/TOOLS.md)**.
+Full catalogue: **[docs/TOOLS.md](docs/TOOLS.md)**. The Telegram pack has
+its own write-up — **[docs/TELEGRAM.md](docs/TELEGRAM.md)** — because that app
+publishes no resource-ids and has to be parsed rather than selected.
 
 ### Teaching it a new app
 

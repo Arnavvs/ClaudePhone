@@ -33,6 +33,8 @@ PKG_ALIASES = {
     "chrome": "com.android.chrome",
     "twitter": "com.twitter.android",
     "x": "com.twitter.android",
+    "telegram": "org.telegram.messenger",
+    "tg": "org.telegram.messenger",
     "termux": "com.termux",
     "settings": "com.android.settings",
 }
@@ -40,6 +42,7 @@ PKG_ALIASES = {
 APP_FOR_PKG = {
     "com.instagram.android": "instagram",
     "com.reddit.frontpage": "reddit",
+    "org.telegram.messenger": "telegram",
 }
 
 
