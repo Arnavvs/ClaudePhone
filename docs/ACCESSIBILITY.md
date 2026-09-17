@@ -122,17 +122,68 @@ claudephone tool bridge_status
 
 ---
 
+## Auth (v0.2)
+
+**v0.1 was an open door.** Binding to 127.0.0.1 keeps the LAN out, but loopback
+is shared by every app on the phone. Verified 2026-09-17 on the realme: from an
+ordinary app uid (Termux, `u0_a308`) `GET /tree` returned the live screen. Any
+installed app — Instagram included — could read whatever was on screen (SMS, 2FA
+codes) and call `/tap`.
+
+v0.2 requires the header `X-Bridge-Token` on every path except `/health`.
+
+- **Who can read the token:** only adb shell (uid 2000) or root, through a
+  ContentProvider that checks the caller's uid in code:
+  ```bash
+  adb shell content query --uri content://com.claudephone.bridge.auth/token
+  adb shell content call  --uri content://com.claudephone.bridge.auth --method rotate
+  ```
+  Both real clients already have shell: the laptop through adb, and Termux through
+  its loopback adb. `runtime/bridge.py` fetches the token on first use, caches it,
+  and re-reads it once on a 401, so a rotation from another client heals itself.
+  `CLAUDEPHONE_BRIDGE_TOKEN` overrides the lookup.
+- **Where the token lives:** it is generated once and kept in the app's private
+  preferences. It survives service restarts and APK upgrades.
+- **A header, never a query parameter.** A web page can make a browser send a
+  GET with any query string (an `<img>` is enough), but not a custom header.
+- **Browser requests are refused.** Any request with an `Origin` header gets 403.
+- **Unauthenticated `/health` says only** `{"ok":true,"auth":"required"}`.
+- **Limits:** request lines and headers are capped (431), reads time out after
+  5 s, and connections are capped at 32 (503).
+
+Verified on the realme (Android 14), 2026-09-17:
+
+| request | result |
+|---|---|
+| app uid, no token: `/health` | minimal body, auth=required |
+| app uid, no token: `/tree` | 401 |
+| app uid, wrong token: `/tree` | 401 |
+| app uid: reading the provider through `content` | refused (SecurityException) |
+| token in the query string | 401 |
+| right token plus an `Origin` header | 403 |
+| 9 KB header | 431 |
+| right token | 200 |
+| token after an APK upgrade | same token, still valid |
+| Termux via loopback adb | reads the token (uid 2000) |
+
+A v0.1 bridge still works with the new client, which reports it as
+`auth: legacy_unauthenticated` so it gets upgraded.
+
+---
+
 ## API
 
 Loopback only, port 8766. Arguments are query parameters, not JSON bodies —
 that removes a parser from the trust path of a service that can tap anything.
+Every endpoint except `/health` needs `X-Bridge-Token`.
 
 | Endpoint | Does |
 |---|---|
-| `GET /health` | liveness, change counter, last package |
-| `GET /tree?limit=N` | the screen as compact elements |
-| `GET /changed?since=N&timeout=ms` | **blocks** until the content changes |
-| `GET /tap?x=&y=&ms=` | dispatch a tap gesture |
+| `GET /health` | liveness; with a token also version, change counter, last package |
+| `GET /tree?limit=N[&windows=all]` | the screen as compact elements, plus windows (below) |
+| `GET /windows` | the window summary alone |
+| `GET /changed?since=N&timeout=ms` | **blocks** until the content changes (max 60 s) |
+| `GET /tap?x=&y=&ms=` | dispatch a tap; returns `lands_on` |
 | `GET /swipe?x1=&y1=&x2=&y2=&ms=` | dispatch a swipe |
 | `GET /key?name=` | back, home, recents, notifications, quicksettings, lock |
 | `GET /text?value=` | set text on the focused input |
@@ -140,7 +191,35 @@ that removes a parser from the trust path of a service that can tap anything.
 `/tree` emits the **same element shape** the Python side already consumes from
 u2 — `{"i", "id", "anchor", "text", "desc", "cls", "c":[x,y], "b":[l,t,r,b],
 "f"}` — so `extract_fields`, the selector registry and every app pack work
-against either backend without knowing which answered.
+against either backend without knowing which answered. The active window's
+elements come first and are numbered exactly as in v0.1.
+
+### Windows (v0.2)
+
+v0.1 read only `getRootInActiveWindow()`. It was blind to everything drawn in
+another window — the keyboard, system alerts, chat heads, volume panels — so a
+dump looked normal while taps landed on something on top. `/tree` now adds:
+
+| field | meaning |
+|---|---|
+| `windows` | every window, topmost first: `id, type, layer, pkg, active, focused, b` |
+| `foreground`, `foreground_reason`, `foreground_known` | which app is really in front and which rule said so: `active_app_window`, `focused_app_window`, `active_root_fallback`, or `unknown:<why>` |
+| `ime_visible` | a keyboard window exists |
+| `obstructions` | windows above the active one that are not thin status/nav bars |
+| flag `h` | node reported not visible to the user (e.g. scrolled out of its list) |
+| `windows=all` | appends other windows' elements, tagged `w` (type) and `wid` |
+
+`/tap` returns `lands_on: {type, pkg, layer, active, bar, covered}`, computed
+before dispatch. `covered: true` means the tap hit a window other than the one
+being read. `tap_and_see` surfaces this as `tap_landed_on`, and `look` as
+`obstructed_by`.
+
+Verified in Settings on the realme:
+- The status bar is correctly **not** an obstruction.
+- Opening search produced `ime_visible: true` with the Gboard window listed as an
+  obstruction.
+- A tap on the keyboard reported `covered: true`.
+- Cost: `/windows` 3.5–4 ms server-side; warm `/tree` 8–12 ms on the phone.
 
 ---
 

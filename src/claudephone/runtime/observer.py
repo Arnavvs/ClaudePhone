@@ -68,6 +68,10 @@ class Observation:
     content: str = ""
     dump_ms: int = 0
     at: float = 0.0
+    # Bridge v0.2: windows drawn above the app (keyboard, system alert, chat
+    # head), and how the foreground package was determined.
+    obstructions: list = field(default_factory=list)
+    foreground_reason: str = ""
 
     def values(self) -> set:
         """(anchor, value) pairs - the unit a diff is taken over."""
@@ -109,12 +113,16 @@ class Observer:
 
         t0 = time.time()
         activity = ""
+        obstructions: list = []
+        fg_reason = ""
         if br.available(self.serial):
             # The bridge reports the package itself, so skip dev.foreground() -
             # that is an adb round trip costing ~200 ms, which would throw away
             # the entire point of an 11 ms read.
             r = br.bridge(self.serial).tree()
             elements, pkg = r["elements"], r["package"]
+            obstructions = r.get("obstructions") or []
+            fg_reason = r.get("foreground_reason") or ""
         else:
             xml = dev.u2(self.serial).dump_hierarchy()
             elements = uix.parse(xml)
@@ -133,6 +141,8 @@ class Observer:
             content=content_signature(elements),
             dump_ms=ms,
             at=time.time(),
+            obstructions=obstructions,
+            foreground_reason=fg_reason,
         )
         # Keep the shared tap-index cache honest: tap(i=...) resolves against
         # whatever was dumped most recently, so a look() that did not update it

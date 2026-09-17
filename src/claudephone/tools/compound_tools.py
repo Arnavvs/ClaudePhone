@@ -90,6 +90,15 @@ def _swipe(obs: Observer, direction: str, duration_ms: int = 220) -> None:
                 duration=duration_ms / 1000.0)
 
 
+def _obstructed(obs) -> Optional[list]:
+    """Compact description of windows over the app, or None when clear."""
+    rows = getattr(obs, "obstructions", None) or []
+    if not rows:
+        return None
+    return [{"type": w.get("type"), "pkg": w.get("pkg"), "b": w.get("b")}
+            for w in rows[:4]]
+
+
 def _item_text(diff: dict, min_len: int = 2) -> list[str]:
     """The human-meaningful values that appeared, longest first."""
     seen, out = set(), []
@@ -126,10 +135,16 @@ def register(reg) -> None:
             blocked = o.explain_empty(after)
             if blocked:
                 out["blocked_by"] = blocked
+            over = _obstructed(after)
+            if over:
+                out["obstructed_by"] = over
             return out
         d = Observer.diff(before, after, limit=limit)
         d["package"] = after.package
         d["dump_ms"] = after.dump_ms
+        over = _obstructed(after)
+        if over:
+            d["obstructed_by"] = over
         if not d["content_changed"]:
             d["note"] = ("screen is unchanged since your last look - acting "
                          "again, or waiting, is more useful than looking again")
@@ -176,7 +191,14 @@ def register(reg) -> None:
         kind, d = _act(o)
         act = ((lambda: d.tap(int(x), int(y))) if kind == "bridge"
                else (lambda: d.click(x, y)))
-        return o.act_and_observe(act, timeout_s=timeout_s)
+        res = o.act_and_observe(act, timeout_s=timeout_s)
+        if kind == "bridge":
+            lands = (d.last_tap or {}).get("lands_on") or {}
+            if lands.get("covered") and not lands.get("bar"):
+                # The tap went to a window over the app (keyboard, alert, chat
+                # head). Say so - otherwise "nothing changed" reads as a dead app.
+                res["tap_landed_on"] = lands
+        return res
 
     @reg.tool(
         description=(
@@ -374,11 +396,15 @@ def register(reg) -> None:
                      "installed": br.Bridge.installed(o.serial),
                      "enabled": br.Bridge.enabled(o.serial),
                      "reachable": br.available(o.serial, recheck=True)}
+        out["auth"] = br.bridge(o.serial).auth
         if out["reachable"]:
             try:
                 out["health"] = br.bridge(o.serial).health()
             except br.BridgeError as e:
                 out["health_error"] = str(e)[:200]
+        elif out["auth"] == "rejected":
+            out["hint"] = ("the bridge refused our token - read it again with "
+                           "`content query --uri " + br.TOKEN_URI + "`")
         elif out["installed"] and not out["enabled"]:
             out["hint"] = ("installed but not enabled - call bridge_enable(), "
                            "or toggle it in Settings > Accessibility")

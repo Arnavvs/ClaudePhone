@@ -30,12 +30,26 @@ service is not installed.
 
 The service binds 127.0.0.1 only. From a laptop it is reached through an adb
 port forward, which this module sets up on demand.
+
+**Auth (bridge v0.2).** Loopback is shared by every app on the phone, so v0.1
+let any installed app read the screen and inject taps. v0.2 requires an
+`X-Bridge-Token` header on everything except a minimal `/health`. The token is
+readable only by adb shell or root, through a ContentProvider:
+
+    adb shell content query --uri content://com.claudephone.bridge.auth/token
+
+Both clients already have shell - the laptop through adb, Termux through its
+loopback adb connection - so this module fetches it with `dev.shell` on first
+use, caches it, and re-fetches once if the service answers 401 (the token was
+rotated). `CLAUDEPHONE_BRIDGE_TOKEN` overrides the lookup. A v0.1 bridge is still
+accepted and reported as `auth: legacy_unauthenticated` so it can be upgraded.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -47,6 +61,9 @@ from ..ui import Element
 PORT = int(os.environ.get("CLAUDEPHONE_BRIDGE_PORT", "8766"))
 PACKAGE = "com.claudephone.bridge"
 SERVICE = PACKAGE + "/" + PACKAGE + ".BridgeService"
+TOKEN_URI = "content://com.claudephone.bridge.auth/token"
+TOKEN_HEADER = "X-Bridge-Token"
+_TOKEN_RE = re.compile(r"token=([0-9a-f]{32,})")
 
 
 class BridgeError(RuntimeError):
@@ -81,6 +98,8 @@ def _elements_from(rows: list) -> list[Element]:
             scrollable="S" in flags,
             selected="*" in flags,
             checked="x" in flags,
+            hidden="h" in flags,
+            window=r.get("w", "") or "",
         ))
     return out
 
@@ -91,6 +110,44 @@ class Bridge:
         self.serial = serial
         self.base = "http://127.0.0.1:" + str(port)
         self._forwarded = False
+        self._token: Optional[str] = os.environ.get("CLAUDEPHONE_BRIDGE_TOKEN") or None
+        self._token_checked = bool(self._token)
+        # "ok" | "legacy_unauthenticated" | "rejected" | "unavailable" | ""
+        self.auth = ""
+        self.last_tap: dict = {}
+
+    # -- auth ----------------------------------------------------------------
+
+    def _fetch_token(self) -> Optional[str]:
+        """Read the token through adb shell. None if the provider is absent (v0.1)."""
+        try:
+            out = dev.shell("content query --uri " + TOKEN_URI,
+                            serial=self.serial, timeout=15, check=False)
+        except Exception:
+            return None
+        m = _TOKEN_RE.search(out or "")
+        return m.group(1) if m else None
+
+    def token(self, refresh: bool = False) -> Optional[str]:
+        # Look it up once per client, not once per request: against a v0.1
+        # bridge there is no provider, and an adb round trip before every
+        # 13 ms read would erase the reason the bridge exists.
+        if refresh or not self._token_checked:
+            self._token = self._fetch_token() or self._token
+            self._token_checked = True
+        return self._token
+
+    def rotate_token(self) -> Optional[str]:
+        """Replace the token on the device. Every other client re-fetches on 401."""
+        try:
+            out = dev.shell("content call --uri content://com.claudephone.bridge.auth"
+                            " --method rotate", serial=self.serial, timeout=15,
+                            check=False)
+        except Exception:
+            return None
+        m = _TOKEN_RE.search(out or "")
+        self._token = m.group(1) if m else self._fetch_token()
+        return self._token
 
     # -- transport -----------------------------------------------------------
 
@@ -105,11 +162,36 @@ class Bridge:
         except Exception:
             pass
 
-    def _get(self, path: str, timeout: float = 10.0, _retry: bool = True) -> dict:
+    def _get(self, path: str, timeout: float = 10.0, _retry: bool = True,
+             _reauth: bool = True) -> dict:
         self._ensure_forward()
+        req = urllib.request.Request(self.base + path)
+        tok = self.token()
+        if tok:
+            req.add_header(TOKEN_HEADER, tok)
         try:
-            with urllib.request.urlopen(self.base + path, timeout=timeout) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            # The server answered, so this is not a transport problem - do not
+            # fall into the forward-repair retry below.
+            try:
+                body = json.loads(e.read().decode() or "{}")
+            except Exception:
+                body = {}
+            if e.code == 401 and _reauth:
+                # Rotated, or never fetched: read it again once, then give up.
+                self.token(refresh=True)
+                return self._get(path, timeout=timeout, _retry=_retry,
+                                 _reauth=False)
+            if e.code == 401:
+                self.auth = "rejected"
+                raise BridgeError("bridge refused the token (401). Read it with: "
+                                  "adb shell content query --uri " + TOKEN_URI) from None
+            if e.code == 404:
+                return body
+            raise BridgeError("bridge HTTP " + str(e.code) + ": "
+                              + str(body.get("error", ""))[:200]) from None
         except Exception as e:
             # Off-device we reach the service through an adb forward, and that
             # forward is not ours alone: uiautomator2 manages its own forwards
@@ -119,7 +201,8 @@ class Bridge:
             if _retry and not dev.on_device():
                 self._forwarded = False
                 self._ensure_forward()
-                return self._get(path, timeout=timeout, _retry=False)
+                return self._get(path, timeout=timeout, _retry=False,
+                                 _reauth=_reauth)
             if isinstance(e, urllib.error.URLError):
                 raise BridgeError("bridge unreachable at " + self.base + path
                                   + ": " + str(e.reason)) from None
@@ -128,13 +211,39 @@ class Bridge:
     # -- status --------------------------------------------------------------
 
     def available(self, timeout: float = 1.5) -> bool:
+        """Usable = reachable AND authenticated (or a v0.1 build with no auth).
+
+        /health answers without a token, so `ok` alone proves nothing: a v0.2
+        service that rejected our token still says ok, with auth=required.
+        """
         try:
-            return bool(self._get("/health", timeout=timeout).get("ok"))
+            h = self._get("/health", timeout=timeout)
+            if h.get("auth") == "required":
+                self.token(refresh=True)
+                h = self._get("/health", timeout=timeout)
         except BridgeError:
+            self.auth = self.auth or "unavailable"
             return False
+        if not h.get("ok"):
+            self.auth = "unavailable"
+            return False
+        auth = h.get("auth")
+        if auth == "ok":
+            self.auth = "ok"
+            return True
+        if auth is None:
+            self.auth = "legacy_unauthenticated"     # v0.1: works, but open
+            return True
+        self.auth = "rejected"
+        return False
 
     def health(self) -> dict:
-        return self._get("/health", timeout=5)
+        h = self._get("/health", timeout=5)
+        if h.get("auth") is None and h.get("ok"):
+            h["auth"] = "legacy_unauthenticated"
+            h["hint"] = ("v0.1 bridge: any app on the phone can use it. "
+                         "Rebuild and install: android/build.sh install")
+        return h
 
     @staticmethod
     def installed(serial: str = "") -> bool:
@@ -173,16 +282,34 @@ class Bridge:
 
     # -- reading -------------------------------------------------------------
 
-    def tree(self, limit: int = 300) -> dict:
+    def tree(self, limit: int = 300, all_windows: bool = False) -> dict:
+        """The active window's elements, plus what else is on screen (v0.2).
+
+        `obstructions` lists windows above the app that are not status or
+        navigation bars - a keyboard, a system alert, a chat head. When it is
+        non-empty, a tap aimed at the app may land on one of them.
+        `all_windows=True` appends those windows' elements, tagged `window`.
+        On a v0.1 bridge the extra keys are simply absent.
+        """
         t0 = time.time()
-        r = self._get("/tree?limit=" + str(limit))
+        r = self._get("/tree?limit=" + str(limit)
+                      + ("&windows=all" if all_windows else ""))
         return {
             "elements": _elements_from(r.get("elements") or []),
             "package": r.get("package") or "",
             "changes": r.get("changes", 0),
+            "foreground": r.get("foreground"),
+            "foreground_reason": r.get("foreground_reason"),
+            "foreground_known": r.get("foreground_known"),
+            "ime_visible": r.get("ime_visible"),
+            "obstructions": r.get("obstructions") or [],
+            "windows": r.get("windows") or [],
             "server_ms": r.get("ms"),
             "ms": int((time.time() - t0) * 1000),
         }
+
+    def windows(self) -> dict:
+        return self._get("/windows")
 
     def changed(self, since: int, timeout_ms: int = 10000) -> dict:
         """Block until the window content changes. The event-driven primitive."""
@@ -193,7 +320,9 @@ class Bridge:
     # -- acting --------------------------------------------------------------
 
     def tap(self, x: int, y: int, ms: int = 50) -> bool:
-        return bool(self._get("/tap?x=%d&y=%d&ms=%d" % (x, y, ms)).get("ok"))
+        """Tap; returns ok. `self.last_tap["lands_on"]` says which window it hit."""
+        self.last_tap = self._get("/tap?x=%d&y=%d&ms=%d" % (x, y, ms))
+        return bool(self.last_tap.get("ok"))
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, ms: int = 250) -> bool:
         return bool(self._get("/swipe?x1=%d&y1=%d&x2=%d&y2=%d&ms=%d"

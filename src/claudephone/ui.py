@@ -58,6 +58,11 @@ class Element:
     selected: bool = False
     checked: bool = False
     pkg: str = ""
+    # Bridge v0.2 only. `hidden`: the system says the node is not visible to the
+    # user (e.g. scrolled out of its list), so its centre is not a safe tap
+    # target. `window`: set for elements from a window other than the active one.
+    hidden: bool = False
+    window: str = ""
 
     @property
     def center(self) -> tuple[int, int]:
@@ -83,9 +88,12 @@ class Element:
             "S" if self.scrollable else "",
             "*" if self.selected else "",
             "x" if self.checked else "",
+            "h" if self.hidden else "",
         ])
         if flags:
             d["f"] = flags
+        if self.window:
+            d["w"] = self.window
         return d
 
 
