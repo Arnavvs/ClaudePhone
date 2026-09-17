@@ -28,3 +28,4 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "claudephone.selectors" = ["*.json"]
+"claudephone.policy" = ["*.json"]

@@ -1,0 +1,85 @@
+{
+  "_about": [
+    "Controls that WRITE to an account, matched on the element a tap will actually hit.",
+    "A rule matches when its `rid` regex full-matches the element's resource-id or anchor",
+    "(if given) AND its `label` regex is found in the lowercased text or content-desc (if given).",
+    "`action` = a ledger action (datacollect/scripts/ledger.py BUDGET): allowed only when the",
+    "operator enabled that write for the run AND budget_for(account, action) has room.",
+    "`forbidden` = no ledger action exists for it, so it is refused (doctrine: no likes,",
+    "comments, DMs, reposts, saves, reports from collection accounts). An operator can allow",
+    "a specific forbidden rule id for a run; nothing else can.",
+    "App rules are checked before `any_app` rules. First match wins."
+  ],
+  "apps": {
+    "com.instagram.android": {
+      "platform": "ig",
+      "verified": "IG 440/446: reel viewer, share sheet, comment sheet (experiments/u2probe/results/*.xml); profile follow id from tools/apps/instagram_profile.py; More-sheet rows from feed/instagram.py",
+      "rules": [
+        {"id": "ig.follow", "rid": "profile_header_follow_button|inline_follow_button",
+         "label": "^(follow|follow back)\\b", "action": "follow"},
+        {"id": "ig.unfollow", "rid": "profile_header_follow_button|inline_follow_button",
+         "label": "^(following|requested)\\b", "forbidden": "unfollow or cancel a follow request"},
+        {"id": "ig.follow.unknown_state", "rid": "profile_header_follow_button|inline_follow_button",
+         "forbidden": "follow button in a state this rule set does not recognise"},
+        {"id": "ig.like", "rid": "like_button", "forbidden": "like a post or reel"},
+        {"id": "ig.save", "rid": "save_button", "forbidden": "save a post or reel"},
+        {"id": "ig.repost", "label": "^repost$", "forbidden": "repost"},
+        {"id": "ig.sheet.interested", "rid": "control_option_text", "label": "^interested$",
+         "action": "interested"},
+        {"id": "ig.sheet.not_interested", "rid": "control_option_text", "label": "^not interested$",
+         "action": "not_interested"},
+        {"id": "ig.sheet.other_write", "rid": "control_option_text",
+         "label": "^(report|save|remix|add to favou?rites|unfollow|block|restrict|hide|mute)\\b",
+         "forbidden": "a More-sheet action that writes to the account"},
+        {"id": "ig.share.recipient", "rid": "direct_share_sheet_grid_view_pog",
+         "forbidden": "choose a DM recipient"},
+        {"id": "ig.share.story", "label": "^add to story$", "forbidden": "post to a story"},
+        {"id": "ig.share.whatsapp", "label": "^whatsapp$", "forbidden": "send outside Instagram"},
+        {"id": "ig.comment.like", "label": "(double-tap|tap) to like comment",
+         "forbidden": "like a comment"},
+        {"id": "ig.comment.reply", "label": "^reply$", "forbidden": "reply to a comment"},
+        {"id": "ig.comment.gift", "rid": "comment_composer_appreciation_gift_button",
+         "forbidden": "send a gift (a payment)"}
+      ]
+    },
+    "com.twitter.android": {
+      "platform": "x",
+      "verified": "labels used by feed/x.py (Like / Follow / Following / Not interested variants); not re-checked on device",
+      "rules": [
+        {"id": "x.follow", "label": "^(follow|follow back)$", "action": "follow"},
+        {"id": "x.unfollow", "label": "^following$", "forbidden": "unfollow"},
+        {"id": "x.like", "label": "^(like|liked|unlike)$", "forbidden": "like"},
+        {"id": "x.repost", "label": "^(repost|undo repost|quote)$", "forbidden": "repost or quote"},
+        {"id": "x.bookmark", "label": "^(bookmark|remove bookmark)$", "forbidden": "bookmark"},
+        {"id": "x.not_interested", "label": "^not interested in (this )?post", "action": "not_interested"}
+      ]
+    },
+    "org.telegram.messenger": {
+      "platform": "tg",
+      "verified": "labels matched by tools/apps/telegram.py tg_join (exact 'join', 'request to join')",
+      "rules": [
+        {"id": "tg.join", "label": "^(join|join channel|join group|request to join)$", "action": "tg_join"},
+        {"id": "tg.leave", "label": "^(leave channel|leave group|delete and leave)$",
+         "forbidden": "leave a chat (tg_leave is the gated path)"}
+      ]
+    },
+    "com.linkedin.android": {
+      "platform": "li",
+      "verified": "not checked on device; LinkedIn is read-only by project decision",
+      "rules": [
+        {"id": "li.connect", "label": "^connect$", "forbidden": "send a connection request"},
+        {"id": "li.follow", "label": "^(follow|following)$", "forbidden": "follow on LinkedIn"},
+        {"id": "li.react", "label": "^(like|celebrate|support|love|insightful|funny)$", "forbidden": "react"},
+        {"id": "li.repost", "label": "^repost$", "forbidden": "repost"}
+      ]
+    }
+  },
+  "any_app": [
+    {"id": "any.send", "label": "^(send|send message|post|publish|share now)$",
+     "forbidden": "send or publish something"},
+    {"id": "any.money", "label": "^(pay|pay now|buy now|place order|subscribe|donate|send gift)$",
+     "forbidden": "spend money"},
+    {"id": "any.account", "label": "^(report|block|unfollow|delete account|log out|sign out)$",
+     "forbidden": "an account-level action"}
+  ]
+}

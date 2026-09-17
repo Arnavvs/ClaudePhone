@@ -109,6 +109,7 @@ def cmd_run(a) -> int:
         allow=a.allow or [], deny=a.deny or [], packs=a.pack or [],
         budget=Budget(max_steps=a.max_steps, max_seconds=a.max_seconds),
         operator_notes=a.notes or "", on_ask=ask,
+        allow_writes=a.allow_write or [], allow_rules=a.allow_rule or [],
     )
     goal = " ".join(a.goal)
     failed = False
@@ -343,6 +344,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="load a tool pack up front (repeatable)")
     r.add_argument("--allow", action="append", help="permit a denied tool")
     r.add_argument("--deny", action="append")
+    r.add_argument("--allow-write", action="append", dest="allow_write",
+                   help="enable one budgeted account write for this run, e.g. "
+                        "follow (still checked against the ledger)")
+    r.add_argument("--allow-rule", action="append", dest="allow_rule",
+                   help="allow one forbidden write rule id from "
+                        "policy/writes.json for this run")
     r.add_argument("--max-steps", type=int, default=30, dest="max_steps")
     r.add_argument("--max-seconds", type=float, default=900.0,
                    dest="max_seconds")

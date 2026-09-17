@@ -344,6 +344,25 @@ also refuses a small list of unrecoverable command patterns (`rm -rf /`, `mkfs`,
 `fastboot`, …) unless `confirm_destructive=true` — a speed bump for a confused
 agent, not a security boundary, since the shell is fully general.
 
+### Account writes are judged by target, and counted by the ledger
+
+The `dangerous` flag is per TOOL, so it cannot tell a tap on "Close" from a tap
+on "Follow". `policy/writes.py` judges every tap by the element it will actually
+hit - the re-found target and whatever sits under the tap point, whichever is
+stricter - using `policy/writes.json`:
+
+| verdict | examples (Instagram ids verified on IG 440/446) | what happens |
+|---|---|---|
+| read | author name, Comment, Share, Playback | tap |
+| forbidden | `like_button`, `save_button`, Repost, share-sheet recipients, Add to story, comment likes, the comment gift button, More-sheet Save/Report, unfollow | refused, always - unless the operator allows that rule id for the run (`--allow-rule`) |
+| write | Follow, Interested, Not interested, Telegram Join, X Not interested | only if the run enabled it (`--allow-write follow`), the mode is not readonly, the phone's account is known, and datacollect's ledger (`budget_for`) has room this minute, hour and day; then recorded in the ledger with the run id |
+
+Every "no" fails closed: no ledger reachable (e.g. on the phone itself), unknown
+phone, or an account at its ceiling all refuse. `verify=false` skips the re-read
+but never the gate. The X feed tools and `tg_join` use the same gate for their
+`apply=true` writes. Verified live on the Samsung with a dry-run dispatcher: Like
+and Save refused with zero dispatches, More-sheet rows classified as above.
+
 The HTTP server binds `127.0.0.1` by default. Exposing it on the LAN requires
 an explicit `--host` and then **mandates** a bearer token, generated on first
 run into `~/.claudephone/token` (0600). This endpoint can do anything to the

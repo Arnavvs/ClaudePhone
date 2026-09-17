@@ -1073,7 +1073,15 @@ def register_membership(mcp) -> None:
                     "joined": True, "already_joined": True,
                     "seconds": round(time.time() - t0, 2)}
         asks_request = "request" in ((btn.text or "") + (btn.desc or "")).lower()
+        # B2: joining is the Telegram write and the ban vector (ledger tg_join).
+        from ...policy import writes as wr
+        serial = dev.default_serial()
+        decision = wr.gate_action("tg_join", "tg", serial, "tg.join")
+        if not decision.allowed:
+            return {"chat": chat, "title": header.get("title"), "joined": False,
+                    "error": "write refused", "write": decision.to_dict()}
         _tap(btn)
+        write_warning = wr.commit(decision, target=chat, serial=serial)
         time.sleep(settle_s)
         els = _read()
         still = _find(els, "join", exact=True)
@@ -1088,6 +1096,8 @@ def register_membership(mcp) -> None:
             "seconds": round(time.time() - t0, 2),
             "note": ("Join is still on screen - the tap did not take, or the "
                      "channel refused it.") if still is not None else None,
+            "write": decision.to_dict(),
+            **({"write_warning": write_warning} if write_warning else {}),
         }
 
     @mcp.tool(

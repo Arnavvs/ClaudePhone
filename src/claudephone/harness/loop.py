@@ -60,6 +60,10 @@ class Policy:
     allow: set[str] = field(default_factory=set)
     deny: set[str] = field(default_factory=set)
     on_ask: Optional[Callable[[str, dict], bool]] = None
+    # Account writes (B2, policy/writes.py). Empty = no budgeted write may run;
+    # forbidden writes (likes, DMs, ...) need their rule id named here.
+    writes: set[str] = field(default_factory=set)
+    allow_rules: set[str] = field(default_factory=set)
 
     def check(self, reg: ToolRegistry, name: str, args: dict) -> tuple[bool, str]:
         if name in self.deny:
@@ -137,6 +141,10 @@ class Agent:
         the stubs the conversation ends up holding.
         """
         rec = recorder.start(goal, self)
+        from ..policy import writes as wr
+        wr.configure(mode=self.policy.mode, writes=self.policy.writes,
+                     allow_rules=self.policy.allow_rules,
+                     run_id=rec.run_id if rec is not None else "")
         if rec is None:
             yield from self._run(goal)
             return

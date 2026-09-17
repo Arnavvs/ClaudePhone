@@ -10,7 +10,33 @@ twice cannot fire one by accident on the first.
 
 from __future__ import annotations
 
+from ... import device as dev
 from ...feed import x as xf
+from ...policy import writes as wr
+
+
+def _gated(action: str, rule: str, apply: bool, run):
+    """Run an X write through the ledger gate (B2) when apply=true.
+
+    `action` is a ledger action (e.g. not_interested) or "" for a write the
+    ledger has no ceiling for - those are refused unless the operator allowed
+    `rule` for the run. Planning (apply=false) never touches the account and is
+    never gated. The write is recorded only if the tool reports it applied.
+    """
+    if not apply:
+        return run(False)
+    serial = dev.default_serial()
+    decision = wr.gate_action(action, "x", serial, rule)
+    if not decision.allowed:
+        return {"applied": False, "error": "write refused",
+                "write": decision.to_dict()}
+    r = run(True)
+    r["write"] = decision.to_dict()
+    if r.get("applied"):
+        warn = wr.commit(decision, target=rule, serial=serial)
+        if warn:
+            r["write_warning"] = warn
+    return r
 
 
 def register(mcp) -> None:
@@ -67,7 +93,8 @@ def register(mcp) -> None:
         )
     )
     def x_feed_not_interested(nth: int = 0, apply: bool = False) -> dict:
-        return xf.not_interested(nth, apply=apply)
+        return _gated("not_interested", "x.tool.not_interested", apply,
+                      lambda go: xf.not_interested(nth, apply=go))
 
     @mcp.tool(
         description=(
@@ -78,7 +105,8 @@ def register(mcp) -> None:
     )
     def x_feed_lists(nth: int = 0, list_name: str = "",
                      apply: bool = False) -> dict:
-        return xf.add_to_list(nth, list_name, apply=apply)
+        return _gated("", "x.tool.add_to_list", apply,
+                      lambda go: xf.add_to_list(nth, list_name, apply=go))
 
     @mcp.tool(description="Open X's 'Add tab' -> Timelines customization screen.")
     def x_feed_timelines_screen() -> dict:
@@ -101,7 +129,8 @@ def register(mcp) -> None:
         )
     )
     def x_feed_pin(name: str, unpin: bool = False, apply: bool = False) -> dict:
-        return xf.pin(name, unpin=unpin, apply=apply)
+        return _gated("", "x.tool.pin", apply,
+                      lambda go: xf.pin(name, unpin=unpin, apply=go))
 
     @mcp.tool(
         description=(
@@ -158,7 +187,8 @@ def register(mcp) -> None:
         )
     )
     def x_feed_like(nth: int = 0, apply: bool = False) -> dict:
-        return xf.like(nth, apply=apply)
+        return _gated("", "x.tool.like", apply,
+                      lambda go: xf.like(nth, apply=go))
 
     @mcp.tool(
         description=(

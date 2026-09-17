@@ -46,37 +46,56 @@ def _dispatch_tap(x: int, y: int, hold_ms: int = 0) -> dict:
 
 def _tap(ref: str, i: Optional[int], x: Optional[int], y: Optional[int],
          verify: bool, hold_ms: int) -> dict:
-    """Shared body of tap and long_press: resolve, verify, dispatch."""
+    """Shared body of tap and long_press: resolve, verify, gate writes, dispatch.
+
+    The write gate (policy/writes.py, B2) runs on EVERY path, including
+    verify=false: skipping the re-read must never skip the ledger.
+    """
+    from ..policy import writes as wr
     from ..runtime import targeting as tg
     verb = "long_pressed" if hold_ms else "tapped"
+    serial = dev.default_serial()
     if ref or i is not None:
         el, err = tg.from_cache(i=i, ref=ref)
         if err:
             return err
-        if not verify:
+        if verify:
+            chk = tg.check_target(el)
+            if chk["status"] not in tg.PROCEED:
+                return {"error": "not " + verb + ": " + chk["status"],
+                        "check": tg.public(chk)}
+            px, py = chk["tap"]
+            target, fresh, pkg = chk["_element"], chk["_fresh"], chk["package"]
+            check_out = tg.public(chk)
+        else:
             px, py = el.center
-            res = {verb: {"x": px, "y": py}, "element": el.to_dict(),
-                   "check": "skipped (verify=false)"}
-            res.update(_dispatch_tap(px, py, hold_ms))
-            return res
-        chk = tg.check_target(el)
-        if chk["status"] not in tg.PROCEED:
-            return {"error": "not " + verb + ": " + chk["status"], "check": chk}
-        px, py = chk["tap"]
-        res = {verb: {"x": px, "y": py}, "check": chk}
-        res.update(_dispatch_tap(px, py, hold_ms))
-        return res
-    if x is None or y is None:
-        return {"error": "give `ref`, `i`, or both x and y"}
-    res: dict = {verb: {"x": int(x), "y": int(y)}}
-    if verify:
-        pt = tg.check_point(int(x), int(y))
-        if pt.get("obstructed_by"):
-            return {"error": "not " + verb + ": obstructed", "check": pt,
+            target, fresh = el, state.last.get("elements") or []
+            pkg = state.last.get("pkg") or ""
+            check_out = "skipped (verify=false)"
+    else:
+        if x is None or y is None:
+            return {"error": "give `ref`, `i`, or both x and y"}
+        px, py = int(x), int(y)
+        pt = tg.check_point(px, py)       # always read: the gate needs it
+        if verify and pt.get("obstructed_by"):
+            return {"error": "not " + verb + ": obstructed", "check": tg.public(pt),
                     "hint": "a window covers that point; dismiss it, or pass "
                             "verify=false if you really mean to hit it"}
-        res["check"] = pt
-    res.update(_dispatch_tap(int(x), int(y), hold_ms))
+        fresh, pkg = pt["_fresh"], pt["package"]
+        target = wr.at_point(fresh, px, py)
+        check_out = tg.public(pt)
+
+    decision = wr.decide(wr.classify_tap(target, fresh, px, py, pkg), serial)
+    if not decision.allowed:
+        return {"error": "not " + verb + ": write refused",
+                "write": decision.to_dict(), "check": check_out}
+    res = {verb: {"x": px, "y": py}, "check": check_out}
+    res.update(_dispatch_tap(px, py, hold_ms))
+    if decision.verdict.kind != "read":
+        res["write"] = decision.to_dict()
+        warn = wr.commit(decision, serial=serial) if res.get("ok") else None
+        if warn:
+            res["write_warning"] = warn
     return res
 
 

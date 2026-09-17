@@ -203,6 +203,8 @@ class Handler(BaseHTTPRequestHandler):
                 packs=body.get("packs") or [],
                 budget=budget,
                 operator_notes=body.get("notes") or "",
+                allow_writes=body.get("allow_writes") or [],
+                allow_rules=body.get("allow_rules") or [],
             )
         except Exception as e:
             return self._send(500, {"error": "could not build agent: "

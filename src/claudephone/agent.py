@@ -100,10 +100,13 @@ def build_registry() -> ToolRegistry:
 
 def build_policy(mode: str = "auto", allow: Optional[list[str]] = None,
                  deny: Optional[list[str]] = None,
-                 on_ask=None) -> Policy:
+                 on_ask=None, allow_writes: Optional[list[str]] = None,
+                 allow_rules: Optional[list[str]] = None) -> Policy:
     allow_set = set(allow or [])
     deny_set = set(deny or []) | (OUTBOUND - allow_set)
-    return Policy(mode=mode, allow=allow_set, deny=deny_set, on_ask=on_ask)
+    return Policy(mode=mode, allow=allow_set, deny=deny_set, on_ask=on_ask,
+                  writes=set(allow_writes or []),
+                  allow_rules=set(allow_rules or []))
 
 
 def build_agent(provider: str = "", model: str = "", mode: str = "auto",
@@ -111,7 +114,9 @@ def build_agent(provider: str = "", model: str = "", mode: str = "auto",
                 deny: Optional[list[str]] = None,
                 packs: Optional[list[str]] = None,
                 budget: Optional[Budget] = None,
-                operator_notes: str = "", on_ask=None) -> Agent:
+                operator_notes: str = "", on_ask=None,
+                allow_writes: Optional[list[str]] = None,
+                allow_rules: Optional[list[str]] = None) -> Agent:
     cfg = ModelConfig.from_env(provider)
     if model:
         cfg.model = model
@@ -123,7 +128,7 @@ def build_agent(provider: str = "", model: str = "", mode: str = "auto",
     return Agent(
         chat=Chat(cfg),
         registry=reg,
-        policy=build_policy(mode, allow, deny, on_ask),
+        policy=build_policy(mode, allow, deny, on_ask, allow_writes, allow_rules),
         budget=budget or Budget(),
         operator_notes=notes,
     )

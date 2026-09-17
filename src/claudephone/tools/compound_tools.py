@@ -182,8 +182,10 @@ def register(reg) -> None:
     )
     def tap_and_see(ref: str = "", i: int = -1, x: int = -1, y: int = -1,
                     timeout_s: float = 6.0, verify: bool = True) -> dict:
+        from ..policy import writes as wr
         from ..runtime import targeting as tg
         o = observer()
+        serial = o.serial or dev.default_serial()
         check = None
         if ref or i >= 0:
             el, err = tg.from_cache(i=None if ref else i, ref=ref)
@@ -193,12 +195,24 @@ def register(reg) -> None:
                 check = tg.check_target(el, serial=o.serial)
                 if check["status"] not in tg.PROCEED:
                     return {"error": "not tapped: " + check["status"],
-                            "check": check}
+                            "check": tg.public(check)}
                 x, y = check["tap"]
+                target, fresh, pkg = check["_element"], check["_fresh"], check["package"]
             else:
                 x, y = el.center
-        if x < 0 or y < 0:
-            return {"error": "give ref, i (from your last look) or x and y"}
+                target, fresh = el, state.last.get("elements") or []
+                pkg = state.last.get("pkg") or ""
+        else:
+            if x < 0 or y < 0:
+                return {"error": "give ref, i (from your last look) or x and y"}
+            pt = tg.check_point(int(x), int(y), serial=o.serial)
+            fresh, pkg = pt["_fresh"], pt["package"]
+            target = wr.at_point(fresh, int(x), int(y))
+        # B2: judge what the tap will hit; never skipped, even with verify=false.
+        decision = wr.decide(wr.classify_tap(target, fresh, int(x), int(y), pkg), serial)
+        if not decision.allowed:
+            return {"error": "not tapped: write refused", "write": decision.to_dict(),
+                    **({"check": tg.public(check)} if check else {})}
         kind, d = _act(o)
         act = ((lambda: d.tap(int(x), int(y))) if kind == "bridge"
                else (lambda: d.click(x, y)))
@@ -210,7 +224,12 @@ def register(reg) -> None:
                 # head). Say so - otherwise "nothing changed" reads as a dead app.
                 res["tap_landed_on"] = lands
         if check is not None and check["status"] != "same":
-            res["check"] = check
+            res["check"] = tg.public(check)
+        if decision.verdict.kind != "read":
+            res["write"] = decision.to_dict()
+            warn = wr.commit(decision, serial=serial)
+            if warn:
+                res["write_warning"] = warn
         res["ver"] = state.version()
         return res
 

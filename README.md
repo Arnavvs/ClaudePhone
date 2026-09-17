@@ -197,6 +197,11 @@ not for transport latency. Details: **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**
 - The HTTP server binds loopback only unless you pass `--host`, and then
   requires a bearer token. It can do anything to the phone.
 - `--mode readonly` is a genuine read-only mode; use it when exploring.
+- **Account writes go through the ledger.** A tap is judged by what it hits:
+  likes, saves, reposts, DMs, comments and reports are refused outright;
+  follow / interested / not interested / Telegram join run only when enabled for
+  the run (`--allow-write follow`) and the datacollect ledger has budget left for
+  that phone's account. See `policy/writes.json`.
 - Automated collection generally breaches the terms of the platforms in the app
   packs. Wrapping it in an agent changes the convenience, not the permission.
 

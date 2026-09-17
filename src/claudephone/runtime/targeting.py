@@ -77,10 +77,12 @@ def read_screen(serial: str = "") -> dict:
     if br.available(serial):
         r = br.bridge(serial).tree(limit=400)
         return {"elements": r["elements"], "obstructions": r.get("obstructions") or [],
+                "package": r.get("foreground") or r.get("package") or "",
                 "backend": "bridge", "ms": int((time.time() - t0) * 1000)}
     xml = dev.u2(serial).dump_hierarchy()
-    return {"elements": uix.parse(xml), "obstructions": [], "backend": "u2",
-            "ms": int((time.time() - t0) * 1000)}
+    pkg = (dev.foreground(serial=serial) or {}).get("package") or ""
+    return {"elements": uix.parse(xml), "obstructions": [], "package": pkg,
+            "backend": "u2", "ms": int((time.time() - t0) * 1000)}
 
 
 def _positions(elements, key: tuple) -> list:
@@ -88,7 +90,7 @@ def _positions(elements, key: tuple) -> list:
 
 
 def settled_read(key: tuple, serial: str = "", max_s: float = SETTLE_MAX_S,
-                 interval_s: float = SETTLE_INTERVAL_S, reader=read_screen,
+                 interval_s: float = SETTLE_INTERVAL_S, reader=None,
                  expected: Optional[tuple] = None):
     """Read until the target's position is the same on two reads in a row.
 
@@ -100,6 +102,7 @@ def settled_read(key: tuple, serial: str = "", max_s: float = SETTLE_MAX_S,
     agent saw (`expected`), nothing moved between the agent's read and now, so a
     second read would only add the settle interval. This is the common case.
     """
+    reader = reader or read_screen      # resolved at call time, not import time
     t0 = time.time()
     prev = reader(serial)
     reads = 1
@@ -144,7 +147,7 @@ def classify(target, elements, obstructions=()) -> dict:
             return out
         x, y = best.center
         status = "same" if dist <= MOVE_TOLERANCE_PX else "shifted"
-        out.update(status=status, tap=[x, y])
+        out.update(status=status, tap=[x, y], _element=best)
         if status == "shifted":
             out["moved_from"] = list(old)
     else:
@@ -216,22 +219,32 @@ def from_cache(i: Optional[int] = None, ref: str = ""):
     return els[i], None
 
 
-def check_target(target, serial: str = "", reader=read_screen) -> dict:
-    """Settle, re-find and classify. The result says whether to tap and where."""
+def public(result: dict) -> dict:
+    """The result without the private `_element` / `_fresh` objects, for the model."""
+    return {k: v for k, v in result.items() if not k.startswith("_")}
+
+
+def check_target(target, serial: str = "", reader=None) -> dict:
+    """Settle, re-find and classify. The result says whether to tap and where.
+
+    `_element` (the re-found element) and `_fresh` (the fresh read) are for the
+    caller's write gate; strip them with public() before returning to a model."""
     t0 = time.time()
     fresh, settled, reads = settled_read(identity(target), serial, reader=reader,
                                          expected=tuple(target.bounds))
     res = classify(target, fresh["elements"], fresh["obstructions"])
     res.update(settled=settled, reads=reads, backend=fresh["backend"],
-               check_ms=int((time.time() - t0) * 1000))
+               check_ms=int((time.time() - t0) * 1000),
+               package=fresh.get("package", ""), _fresh=fresh["elements"])
     return res
 
 
-def check_point(x: int, y: int, serial: str = "", reader=read_screen) -> dict:
+def check_point(x: int, y: int, serial: str = "", reader=None) -> dict:
     """For a raw coordinate tap: what is there now, and is it covered?"""
-    fresh = reader(serial)
+    fresh = (reader or read_screen)(serial)
     occ = _occupant(fresh["elements"], (x, y))
-    res: dict = {"backend": fresh["backend"]}
+    res: dict = {"backend": fresh["backend"], "package": fresh.get("package", ""),
+                 "_fresh": fresh["elements"]}
     if occ is not None:
         res["hits"] = uix.compact([occ], limit=1)[0]
     blocker = _obstruction_at(fresh["obstructions"], x, y)
