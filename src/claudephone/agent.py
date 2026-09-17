@@ -14,6 +14,7 @@ from typing import Optional
 
 from .harness import meta_tools
 from .harness.loop import Agent, Budget, Policy
+from .harness.stagnation import Stagnation
 from .harness.models import Chat, ModelConfig
 from .harness.registry import ToolRegistry
 from .tools import (compound_tools, device_tools, explore_tools, file_tools,
@@ -119,7 +120,8 @@ def build_agent(provider: str = "", model: str = "", mode: str = "auto",
                 operator_notes: str = "", on_ask=None,
                 allow_writes: Optional[list[str]] = None,
                 allow_rules: Optional[list[str]] = None,
-                allow_uncounted_reads: bool = False) -> Agent:
+                allow_uncounted_reads: bool = False,
+                stagnation: bool = True) -> Agent:
     cfg = ModelConfig.from_env(provider)
     if model:
         cfg.model = model
@@ -135,4 +137,7 @@ def build_agent(provider: str = "", model: str = "", mode: str = "auto",
                             allow_uncounted_reads),
         budget=budget or Budget(),
         operator_notes=notes,
+        # B4: 0 disables the stop but keeps the warning, which is what an
+        # operator watching a run by hand usually wants.
+        stagnation=Stagnation() if stagnation else Stagnation(stop_after=0),
     )

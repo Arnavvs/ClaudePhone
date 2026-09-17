@@ -111,6 +111,7 @@ def cmd_run(a) -> int:
         operator_notes=a.notes or "", on_ask=ask,
         allow_writes=a.allow_write or [], allow_rules=a.allow_rule or [],
         allow_uncounted_reads=a.allow_uncounted_reads,
+        stagnation=not a.no_stagnation_stop,
     )
     goal = " ".join(a.goal)
     failed = False
@@ -351,6 +352,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--allow-rule", action="append", dest="allow_rule",
                    help="allow one forbidden write rule id from "
                         "policy/writes.json for this run")
+    r.add_argument("--no-stagnation-stop", action="store_true",
+                   dest="no_stagnation_stop",
+                   help="do not end a run that repeats one call on an unchanged "
+                        "screen; the model is still warned (B4)")
     r.add_argument("--allow-uncounted-reads", action="store_true",
                    dest="allow_uncounted_reads",
                    help="let budgeted reads (profile opens, reels, searches...) run "

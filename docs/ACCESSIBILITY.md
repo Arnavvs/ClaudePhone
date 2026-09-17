@@ -55,7 +55,7 @@ waits** — see [the race](#the-race-worth-knowing-about).
 
 ## Two corrections to earlier project beliefs
 
-### 1. u2 and a custom AccessibilityService DO coexist — on some phones
+### 1. u2 and a custom AccessibilityService do NOT coexist (the original entry was half a test)
 
 Every earlier document in this project (and MobileAgentMCP before it) stated
 that they could not:
@@ -77,7 +77,20 @@ So the bridge is an **addition**, not a replacement. `Observer` prefers it and
 falls back to u2 when it is not installed, which is why every existing tool got
 faster without being touched.
 
-**Not on the Samsung M21 (Android 12, uiautomator2 3.7.0), measured 2026-09-17.**
+**That test only measured one direction.** It shows u2 still dumping while the
+bridge is *enabled*, which is not the same as the bridge still serving while u2
+is *running*. The second direction is the one that matters, and it fails on both
+phones:
+
+| phone | u2 dumps with the bridge enabled | bridge serves while u2 runs |
+|---|---|---|
+| realme (Android 14) | yes, 215 ms | **no** — needs the hand-back, 1.7 s (re-tested 2026-09-18 on v0.2.1) |
+| Samsung M21 (Android 12) | yes | **no** — service unbound device-wide |
+
+So the bridge is still an addition rather than a replacement, but the two cannot
+be interleaved for free on either phone. `Bridge._yield_u2` pays the 1.7 s.
+
+**On the Samsung M21 (Android 12, uiautomator2 3.7.0), measured 2026-09-17.**
 While u2's UiAutomation runs, Android unbinds the bridge: `dumpsys accessibility`
 drops it from *bound services*, port 8766 stops listening, and even an on-device
 `nc 127.0.0.1 8766` gets nothing. Enabled state and process are untouched.

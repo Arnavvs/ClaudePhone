@@ -444,6 +444,39 @@ Verified from the Samsung over `adb reverse`: `/health` 200 without a token,
 `/budget` 401 without it and 200 with it, and @saravbhaita's ceilings came back
 scaled to 25% with the review note attached.
 
+### A stuck run says so, instead of burning the budget (B4)
+
+Cheap models loop, and these apps give them reasons to: Instagram 446's search
+goes quiet after the first query in a session, swipes do not always advance, and
+a tap on a control that has scrolled away does nothing at all. Left alone the
+model repeats the call until `max_steps` ends the run — the most expensive way to
+fail, reported under the wrong reason.
+
+`harness/stagnation.py` watches for one narrow thing: **the same tool, the same
+arguments, and no evidence the screen moved.**
+
+| attempts | what happens |
+|---|---|
+| 2 | a `POSSIBLY STUCK` note goes into the conversation, telling the model to read the screen and change approach rather than retry |
+| 3 | the run ends with `stopped_by="stagnation"`, naming the tool and arguments |
+
+Repeating a call that *does* move the screen is progress through a feed and is
+never flagged. A screen matching one seen `revisit_gap` steps earlier produces a
+softer hint ("you were on this screen at step N") because circling back is
+sometimes the right route. The fingerprint comes from `state.remember`, which
+every read already computes, so this costs nothing.
+
+**No fingerprint at all counts as no progress, not as progress.** That was found
+live: 25 identical swipes with no `ui_dump` between them ran to `max_steps`
+without a word, because "unknown" was being treated as "the screen moved". With
+that fixed, the same run stops in 3 steps, or 5 with reads interleaved.
+
+`--no-stagnation-stop` keeps the warning and drops the stop, which is what an
+operator watching a run by hand usually wants. The prompt carries the matching
+operating rules — wait at most three times, check the last action took effect,
+lengthen a swipe that did nothing then reverse it, one query per tab, three
+routes then report — so the model has the same policy the harness enforces.
+
 The HTTP server binds `127.0.0.1` by default. Exposing it on the LAN requires
 an explicit `--host` and then **mandates** a bearer token, generated on first
 run into `~/.claudephone/token` (0600). This endpoint can do anything to the

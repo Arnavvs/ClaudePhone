@@ -15,6 +15,10 @@ Three things here are not standard loop boilerplate and are worth knowing about:
   set to ask, allow or deny without touching tool code.
 * **Budgets are enforced, not suggested.** Steps, wall-clock and token spend
   all terminate the run, and the reason is reported.
+* **Stagnation ends a run early** (`harness/stagnation.py`). Repeating one call
+  on a screen that does not change is the usual way a cheap model burns a
+  budget; it gets one warning it can act on, then the run stops with
+  `stopped_by="stagnation"` rather than `max_steps`.
 * **Every run is written to disk** as it happens, by `harness/recorder.py`.
   Recording sits in `run()` so all three entry points get it for free, and it
   captures each event before compaction clips it.
@@ -31,6 +35,7 @@ from . import recorder
 from .models import Chat, ModelError
 from .prompt import build_system
 from .registry import ToolRegistry
+from .stagnation import Stagnation
 
 # Tool results this many steps back get clipped to a stub.
 KEEP_FULL_RESULTS = 6
@@ -95,12 +100,14 @@ class Agent:
     def __init__(self, chat: Chat, registry: ToolRegistry,
                  policy: Optional[Policy] = None,
                  budget: Optional[Budget] = None,
-                 operator_notes: str = "") -> None:
+                 operator_notes: str = "",
+                 stagnation: Optional[Stagnation] = None) -> None:
         self.chat = chat
         self.reg = registry
         self.policy = policy or Policy()
         self.budget = budget or Budget()
         self.operator_notes = operator_notes
+        self.stagnation = stagnation if stagnation is not None else Stagnation()
         self.messages: list[dict] = []
 
     # -- context -------------------------------------------------------------
@@ -193,6 +200,7 @@ class Agent:
                "packs": sorted(self.reg.active_packs), "at": time.time()}
 
         steps = 0
+        stag = self.stagnation
         while True:
             tokens = self.chat.total_usage.get("total_tokens", 0)
             stop = self.budget.exceeded(steps, started, tokens)
@@ -256,12 +264,15 @@ class Agent:
                        "args": args}
 
                 ok, why = self.policy.check(self.reg, name, args)
+                fp_before = stag.before() if stag else ""
                 result = ({"error": "blocked: " + why} if not ok
                           else self.reg.call(name, args))
 
                 yield {"type": "tool_result", "step": steps, "tool": name,
                        "ok": "error" not in result,
                        "ms": result.get("_ms"), "result": result}
+
+                advice = stag.observe(steps, name, args, fp_before) if stag else None
 
                 payload = json.dumps(result, default=str)
                 if native:
@@ -273,4 +284,21 @@ class Agent:
                         "role": "user",
                         "content": "Result of " + name + ":\n" + payload})
                     # json mode: one call per turn, by protocol
+
+                if advice:
+                    yield {"type": "note", "step": steps,
+                           "reason": advice["reason"],
+                           "message": advice["message"]}
+                    if advice.get("stop"):
+                        yield {"type": "final", "content": advice["message"],
+                               "stopped_by": "stagnation", "steps": steps,
+                               "stagnation": {k: v for k, v in advice.items()
+                                              if k != "stop"},
+                               "seconds": round(time.time() - started, 1),
+                               "usage": dict(self.chat.total_usage)}
+                        return
+                    # The model has to SEE the warning, so it goes into the
+                    # conversation, not just the event stream.
+                    self.messages.append({"role": "user",
+                                          "content": advice["message"]})
                     break
