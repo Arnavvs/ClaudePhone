@@ -363,6 +363,48 @@ but never the gate. The X feed tools and `tg_join` use the same gate for their
 `apply=true` writes. Verified live on the Samsung with a dry-run dispatcher: Like
 and Save refused with zero dispatches, More-sheet rows classified as above.
 
+### Budgeted reads are counted too (B2b)
+
+The one restriction this project has had came from READ volume (316 profile
+opens in 27 minutes), not writes. `policy/reads.py` puts every budgeted read
+through the same ledger, with the same action names and pacing as datacollect's
+phases:
+
+| read | counted by |
+|---|---|
+| `profile_open` | `ig_open_profile`; taps on a reel author, avatar, search-result user, "Go to X's profile" |
+| `grid_scan` | `ig_scan_grid`, `ig_scan_reels_grid` (one per call) |
+| `reel_open` | taps on grid tiles; each post `ig_collect_posts` reads; a forward swipe in a reel viewer opened from a grid |
+| `reel_walk` | `ig_collect_reel_details` (one per walk, as phase F counts it) |
+| `feed_reel` | `reset_reels_feed`, a tap on the Reels tab, each forward swipe in the Reels tab (including off a "Suggested for you" card) |
+| `sheet_open` | `ig_about_reel`; taps on the reel More button |
+| `comment_read` | `ig_collect_reel_comments(open_sheet=true)`; taps on Comment / the caption |
+| `search` | `text_input` into an Instagram search box |
+| `tg_read` | every Telegram chat opened: `tg_open(chat)`, every tool that takes `chat`, each row `tg_chats(deep=true)` opens |
+
+Before the read: hour and day through `Ledger.can` (so `budget_for` and
+`ACCOUNT_SCALE`), then a wait of up to 75 s for the per-minute ceiling. After
+it: one ledger row, `run_id` `claudephone:<run>`, note `claudephone read`. Loops
+re-check each item and stop at a ceiling rather than overrun it. Refusals are
+returned as `{"error": "ledger refused this read", "read": {...}}` before
+anything is tapped or deep-linked.
+
+Fails closed like writes: an unknown phone or no reachable ledger refuses the
+read — which means **on the phone itself these tools refuse** until a ledger
+service exists, unless the operator runs with `--allow-uncounted-reads` (or
+`CLAUDEPHONE_UNCOUNTED_READS=1`); results then say `counted: false`.
+
+Typing is also judged by target: `text_input` and Enter are refused while a
+comment / DM / reply box is on screen (`composers` in `writes.json`: resource
+ids plus a hint pattern), rule id `any.composer`.
+
+Not counted, because the ledger has no action for them: Telegram search, X and
+LinkedIn reads (their feed tools have their own paths), and swipes on
+non-Instagram screens. datacollect's phases call MobileAgentMCP, not these tools,
+so nothing is counted twice. Verified live on the Samsung (IG 446): 10 counted
+reads, 10 ledger rows, typing and Enter refused in the comment sheet, and an
+author tap with no ledger refused with zero dispatches.
+
 The HTTP server binds `127.0.0.1` by default. Exposing it on the LAN requires
 an explicit `--host` and then **mandates** a bearer token, generated on first
 run into `~/.claudephone/token` (0600). This endpoint can do anything to the

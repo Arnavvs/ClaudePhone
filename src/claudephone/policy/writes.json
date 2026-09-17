@@ -8,7 +8,9 @@
     "`forbidden` = no ledger action exists for it, so it is refused (doctrine: no likes,",
     "comments, DMs, reposts, saves, reports from collection accounts). An operator can allow",
     "a specific forbidden rule id for a run; nothing else can.",
-    "App rules are checked before `any_app` rules. First match wins."
+    "App rules are checked before `any_app` rules. First match wins.",
+    "`counted` (per app) = taps that open a budgeted READ; policy/reads.py counts them in the ledger.",
+    "`composers` = boxes where typing is a send (comment, DM, reply); text entry there is refused."
   ],
   "apps": {
     "com.instagram.android": {
@@ -40,7 +42,20 @@
         {"id": "ig.comment.reply", "label": "^reply$", "forbidden": "reply to a comment"},
         {"id": "ig.comment.gift", "rid": "comment_composer_appreciation_gift_button",
          "forbidden": "send a gift (a payment)"}
-      ]
+      ],
+      "counted": [
+        {"id": "ig.open.profile",
+         "rid": "clips_author_username|clips_author_profile_pic|row_search_user_username|row_search_user_fullname|row_search_user_container",
+         "count": "profile_open"},
+        {"id": "ig.open.profile_from_comment", "label": "^go to .+'s profile$", "count": "profile_open"},
+        {"id": "ig.open.more_sheet", "rid": "clips_ufi_more_button_component", "count": "sheet_open"},
+        {"id": "ig.open.comments", "rid": "comment_button|comment_count|clips_caption_component",
+         "count": "comment_read"},
+        {"id": "ig.open.grid_reel", "rid": "preview_clip_thumbnail", "count": "reel_open"},
+        {"id": "ig.open.grid_post", "rid": "image_button", "count": "reel_open"},
+        {"id": "ig.open.reels_tab", "rid": "clips_tab", "count": "feed_reel"}
+      ],
+      "verified_counted": "ids from experiments/u2probe dumps (clips_*, comment_*, Go to X's profile), tools/apps/instagram_profile.py (preview_clip_thumbnail, image_button) and datacollect ig_discover.py (row_search_user_*); row_search_user_container is unverified"
     },
     "com.twitter.android": {
       "platform": "x",
@@ -81,5 +96,10 @@
      "forbidden": "spend money"},
     {"id": "any.account", "label": "^(report|block|unfollow|delete account|log out|sign out)$",
      "forbidden": "an account-level action"}
-  ]
+  ],
+  "composers": {
+    "rids": {"com.instagram.android": ["layout_comment_thread_edittext_multiline", "row_thread_composer_edittext"]},
+    "hint": "^(add a comment( for .+)?(\u2026|\\.\\.\\.)?|what do you think of this\\??|message(\u2026|\\.\\.\\.)?|reply to .*|post your reply|write a (comment|message).*|add a caption.*)$",
+    "verified": "layout_comment_thread_edittext_multiline with hint 'Add a comment for <handle>' live on IG 446 (Samsung, 2026-09-17), 'What do you think of this?' from experiments/u2probe/results/comments.xml; row_thread_composer_edittext and the other hints are unverified"
+  }
 }

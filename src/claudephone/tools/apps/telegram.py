@@ -580,8 +580,16 @@ def _chat_rows(els=None) -> list:
 
 
 def _peek_row(row) -> Optional[dict]:
-    """Open one chat-list row, read its title, and come back. ~2 s."""
+    """Open one chat-list row, read its title, and come back. ~2 s.
+
+    Counted as a tg_read; a refusal comes back as {"error": ..., "read": ...}.
+    """
+    from ...policy import reads
+    gate = reads.acquire("tg_read", "tg", target="chat_list_row")
+    if not gate.allowed:
+        return reads.refusal(gate)
     _tap(row)
+    reads.commit(gate, target="chat_list_row")
     els, _ = _wait_for(lambda e: _is_chat(e) and not _on_chat_list(e),
                        timeout_s=4.0)
     if _on_chat_list(els):
@@ -676,8 +684,17 @@ def _open_guard(chat: str, wait_s: float = 4.5):
 
     Every tool that takes a `chat` goes through this, so an unresolved handle
     is reported as such instead of being acted on as whatever was open before.
+    Opening a chat is a counted tg_read (B2b).
     """
+    gate = None
+    if chat:
+        from ...policy import reads
+        gate = reads.acquire("tg_read", "tg", target=chat)
+        if not gate.allowed:
+            return {}, reads.refusal(gate)
     opened = _open(chat, wait_s)
+    if gate is not None:
+        reads.commit(gate, target=chat)
     if not opened.get("in_telegram"):
         return opened, {"error": "Telegram did not come to the foreground",
                         **opened}
@@ -719,7 +736,16 @@ def register(mcp) -> None:
         )
     )
     def tg_open(chat: str = "", wait_s: float = 4.5) -> dict:
+        gate = None
+        if chat:
+            from ...policy import reads
+            gate = reads.acquire("tg_read", "tg", target=chat)
+            if not gate.allowed:
+                return reads.refusal(gate)
         res = _open(chat, wait_s)
+        if gate is not None:
+            reads.commit(gate, target=chat)
+            res["read"] = gate.to_dict()
         if chat and not res.get("resolved"):
             res["error"] = (f"{chat!r} did not resolve - Telegram stayed on "
                             "the chat list.")
@@ -769,6 +795,11 @@ def register(mcp) -> None:
                 if len(seen) >= max_chats:
                     break
                 info = _peek_row(r)
+                if info and info.get("error"):
+                    return {"visible_rows": len(rows), "collected": len(seen),
+                            "chats": seen, "deep": True, "note": note,
+                            "stopped": info["error"], "read": info.get("read"),
+                            "seconds": round(time.time() - t0, 2)}
                 if not info or not info.get("title"):
                     continue
                 if info["title"] in titles:

@@ -45,15 +45,15 @@ Loaded by default. Enough to orient on any screen and find more tools.
 | `observe_stats` | `()` | Report how many screen reads this session has done and their average cost |
 | `open_and_wait` ! | `(package, quiet_s?, timeout_s?, limit?)` | Open an app and wait until it has finished loading, returning what is on screen when it settles |
 | `press_and_see` ! | `(key?, timeout_s?)` | Press a hardware key and report what changed |
-| `press_key` | `(key)` | Press a hardware/navigation key: back, home, enter, recents, wake, sleep, delete, search, volume_up/down |
+| `press_key` | `(key)` | Press a hardware/navigation key: back, home, enter, recents, wake, sleep, delete, search, volume_up/down. Enter is refused while a comment / message box is on screen |
 | `screenshot` | `(name?)` | Take a screenshot and save it, returning the PATH (not the image) |
 | `scroll_to` ! | `(query, direction?, max_swipes?, settle_s?)` | Scroll until something matching `query` appears on screen, then stop |
 | `stop_app` | `(package)` | Force-stop an app |
-| `swipe` | `(direction?, x1?, y1?, x2?, y2?, duration_ms?)` | Swipe |
+| `swipe` | `(direction?, x1?, y1?, x2?, y2?, duration_ms?)` | Swipe. A forward swipe through Instagram reels is a counted read (`feed_reel` / `reel_open`) |
 | `swipe_and_see` ! | `(direction?, timeout_s?)` | Swipe and report what changed as a result |
-| `tap` | `(ref?, i?, x?, y?, verify?)` | Tap an element by ref `<ver>_<i>`; re-finds it on a fresh read first and refuses if it moved away, vanished, is hidden or covered |
+| `tap` | `(ref?, i?, x?, y?, verify?)` | Tap an element by ref `<ver>_<i>`; re-finds it on a fresh read first and refuses if it moved away, vanished, is hidden or covered. Account writes are gated, and taps that open a budgeted read (profile, More sheet, comments, grid tile) are counted in the ledger |
 | `tap_and_see` ! | `(ref?, i?, x?, y?, timeout_s?, verify?)` | Tap something and report what changed as a result - same pre-tap check as `tap` |
-| `text_input` | `(text)` | Type text into the focused field |
+| `text_input` | `(text)` | Type text into the focused field. Refused in a comment / message box; an Instagram search counts as `search` |
 | `ui_dump` | `(query?, clickable_only?, limit?, include_system?)` | Read the current screen as structured elements |
 | `use_tools` | `(pack)` | Load a tool pack so its tools become callable |
 | `wait_stable` | `(quiet_s?, timeout_s?)` | Wait until the screen stops changing, i.e |

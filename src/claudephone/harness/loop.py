@@ -64,6 +64,9 @@ class Policy:
     # forbidden writes (likes, DMs, ...) need their rule id named here.
     writes: set[str] = field(default_factory=set)
     allow_rules: set[str] = field(default_factory=set)
+    # Counted reads (B2b, policy/reads.py) refuse when no ledger is reachable;
+    # True lets them run uncounted, flagged in every result.
+    allow_uncounted_reads: bool = False
 
     def check(self, reg: ToolRegistry, name: str, args: dict) -> tuple[bool, str]:
         if name in self.deny:
@@ -144,7 +147,8 @@ class Agent:
         from ..policy import writes as wr
         wr.configure(mode=self.policy.mode, writes=self.policy.writes,
                      allow_rules=self.policy.allow_rules,
-                     run_id=rec.run_id if rec is not None else "")
+                     run_id=rec.run_id if rec is not None else "",
+                     allow_uncounted_reads=self.policy.allow_uncounted_reads)
         if rec is None:
             yield from self._run(goal)
             return

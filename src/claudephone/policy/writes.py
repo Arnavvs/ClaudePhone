@@ -24,8 +24,10 @@ check has re-found it), using `writes.json`:
                                                              -> then record() it
 
 Every "no" fails CLOSED. On the phone itself there is no collect.db, so
-budgeted writes are refused there until a ledger service exists - reads are
-unaffected.
+budgeted writes are refused there until a ledger service exists. Budgeted
+READS (profile opens, grid scans, reels, sheets, comments, searches, Telegram
+chat opens) go through the same ledger in policy/reads.py (B2b) and are
+refused there too, unless the operator runs with --allow-uncounted-reads.
 
 Ceilings are only ever read through datacollect's `Ledger.can` / `budget_for`,
 never from BUDGET directly (CLAUDE.md: "Read ceilings only through
@@ -58,6 +60,7 @@ class Config:
     mode: str = "auto"                              # auto | ask | readonly
     writes: set = field(default_factory=set)       # ledger actions enabled this run
     allow_rules: set = field(default_factory=set)  # forbidden rule ids allowed this run
+    allow_uncounted_reads: bool = False            # reads without a ledger (policy/reads.py)
     run_id: str = ""
 
 
@@ -69,10 +72,12 @@ CONFIG = Config(writes=_env_set("CLAUDEPHONE_WRITES"),
                 allow_rules=_env_set("CLAUDEPHONE_ALLOW_RULES"))
 
 
-def configure(mode: str = "auto", writes=(), allow_rules=(), run_id: str = "") -> None:
+def configure(mode: str = "auto", writes=(), allow_rules=(), run_id: str = "",
+              allow_uncounted_reads: bool = False) -> None:
     CONFIG.mode = mode
     CONFIG.writes = set(writes) | _env_set("CLAUDEPHONE_WRITES")
     CONFIG.allow_rules = set(allow_rules) | _env_set("CLAUDEPHONE_ALLOW_RULES")
+    CONFIG.allow_uncounted_reads = bool(allow_uncounted_reads)
     CONFIG.run_id = run_id
 
 
@@ -237,12 +242,31 @@ def _ledger_module():
     return lg, store
 
 
+_LEDGERS: dict = {}
+
+
 def _open(account: str, device: str):
+    """A Ledger for this account, connection reused within the process.
+
+    store.connect() runs the schema and migrations on every call; a feed loop
+    asking once per reel should not pay that each time. Keyed on the database
+    path too, so a test that points store.DB elsewhere gets its own connection.
+    """
     lg, store = _ledger_module()
-    con = store.connect()
-    return lg.Ledger(con, account=account, device=device,
-                     run_id=("claudephone:" + CONFIG.run_id) if CONFIG.run_id
-                     else "claudephone")
+    run = ("claudephone:" + CONFIG.run_id) if CONFIG.run_id else "claudephone"
+    key = (getattr(store, "DB", ""), account, device)
+    led = _LEDGERS.get(key)
+    if led is None:
+        led = lg.Ledger(store.connect(), account=account, device=device, run_id=run)
+        _LEDGERS[key] = led
+    led.run_id = run
+    return led
+
+
+def ledger_for(account: str, serial: str = ""):
+    """The Ledger for an account on a phone (device model from guard.ACCOUNTS)."""
+    device = (_accounts().get(serial or "") or {}).get("model", "")
+    return _open(account, device)
 
 
 def ledger_check(account: str, action: str, device: str = "") -> tuple:

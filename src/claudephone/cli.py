@@ -110,6 +110,7 @@ def cmd_run(a) -> int:
         budget=Budget(max_steps=a.max_steps, max_seconds=a.max_seconds),
         operator_notes=a.notes or "", on_ask=ask,
         allow_writes=a.allow_write or [], allow_rules=a.allow_rule or [],
+        allow_uncounted_reads=a.allow_uncounted_reads,
     )
     goal = " ".join(a.goal)
     failed = False
@@ -350,6 +351,11 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--allow-rule", action="append", dest="allow_rule",
                    help="allow one forbidden write rule id from "
                         "policy/writes.json for this run")
+    r.add_argument("--allow-uncounted-reads", action="store_true",
+                   dest="allow_uncounted_reads",
+                   help="let budgeted reads (profile opens, reels, searches...) run "
+                        "when no ledger is reachable, e.g. on the phone; results "
+                        "say counted=false")
     r.add_argument("--max-steps", type=int, default=30, dest="max_steps")
     r.add_argument("--max-seconds", type=float, default=900.0,
                    dest="max_seconds")

@@ -205,6 +205,7 @@ class Handler(BaseHTTPRequestHandler):
                 operator_notes=body.get("notes") or "",
                 allow_writes=body.get("allow_writes") or [],
                 allow_rules=body.get("allow_rules") or [],
+                allow_uncounted_reads=bool(body.get("allow_uncounted_reads")),
             )
         except Exception as e:
             return self._send(500, {"error": "could not build agent: "

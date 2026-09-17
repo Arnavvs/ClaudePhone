@@ -89,6 +89,14 @@ def _tap(ref: str, i: Optional[int], x: Optional[int], y: Optional[int],
     if not decision.allowed:
         return {"error": "not " + verb + ": write refused",
                 "write": decision.to_dict(), "check": check_out}
+    # B2b: a tap that opens a budgeted read (profile, sheet, comments, reel).
+    from ..policy import reads
+    read_gate = None
+    _, count_action = reads.classify_tap_count(target, fresh, px, py, pkg)
+    if count_action and decision.verdict.kind == "read":
+        read_gate = reads.acquire(count_action, reads.platform_of(pkg), serial=serial)
+        if not read_gate.allowed:
+            return reads.refusal(read_gate, check=check_out)
     res = {verb: {"x": px, "y": py}, "check": check_out}
     res.update(_dispatch_tap(px, py, hold_ms))
     if decision.verdict.kind != "read":
@@ -96,7 +104,33 @@ def _tap(ref: str, i: Optional[int], x: Optional[int], y: Optional[int],
         warn = wr.commit(decision, serial=serial) if res.get("ok") else None
         if warn:
             res["write_warning"] = warn
+    if read_gate is not None and res.get("ok"):
+        reads.commit(read_gate, target=(target.text or target.desc or target.rid)
+                     if target is not None else "", serial=serial)
+        res["read"] = read_gate.to_dict()
     return res
+
+
+def _screen_now():
+    """Fresh elements + package, without touching the agent's screen version."""
+    from ..runtime import targeting as tg
+    r = tg.read_screen()
+    return r["elements"], r.get("package", "")
+
+
+def _composer_refusal(elements, pkg: str, what: str) -> Optional[dict]:
+    """Typing into, or pressing Enter in, a comment / DM / reply box is a send."""
+    from ..policy import reads
+    from ..policy import writes as wr
+    box = reads.composer_on_screen(elements, pkg)
+    if box is None or "any.composer" in wr.CONFIG.allow_rules:
+        return None
+    return {"error": what + " refused: a comment / message box is on screen",
+            "composer": box,
+            "write": {"allowed": False, "kind": "forbidden", "rule": "any.composer",
+                      "why": "typing or pressing Enter in a composer sends a comment "
+                             "or message; allow rule 'any.composer' for the run to "
+                             "override"}}
 
 
 def register(mcp) -> None:
@@ -147,17 +181,45 @@ def register(mcp) -> None:
                 return {"error": f"bad direction {direction!r}",
                         "valid": list(moves)}
             x1, y1, x2, y2 = moves[direction.lower()]
+        gate = None
+        if y1 - y2 > abs(x1 - x2):              # upward: advances a feed
+            from ..policy import reads
+            els, pkg = _screen_now()
+            action = reads.reel_advance_action(els, pkg)
+            if action:
+                gate = reads.acquire(action, "ig", target="swipe")
+                if not gate.allowed:
+                    return reads.refusal(gate)
         dev.shell(f"input swipe {x1} {y1} {x2} {y2} {int(duration_ms)}")
-        return {"swiped": {"from": [x1, y1], "to": [x2, y2],
-                           "duration_ms": duration_ms}}
+        out = {"swiped": {"from": [x1, y1], "to": [x2, y2],
+                          "duration_ms": duration_ms}}
+        if gate is not None:
+            from ..policy import reads
+            reads.commit(gate, target="swipe")
+            out["read"] = gate.to_dict()
+        return out
 
     @mcp.tool(
         description="Type text into the focused field. Tap the field first."
     )
     def text_input(text: str) -> dict:
+        from ..policy import reads
+        els, pkg = _screen_now()
+        refused = _composer_refusal(els, pkg, "typing")
+        if refused:
+            return refused
+        gate = None
+        if reads.search_box_on_screen(els, pkg):
+            gate = reads.acquire("search", "ig", target=text[:60])
+            if not gate.allowed:
+                return reads.refusal(gate)
         safe = text.replace("'", "'\\''").replace(" ", "%s")
         dev.shell(f"input text '{safe}'")
-        return {"typed": text}
+        out = {"typed": text}
+        if gate is not None:
+            reads.commit(gate, target=text[:60])
+            out["read"] = gate.to_dict()
+        return out
 
     @mcp.tool(
         description="Press a hardware/navigation key: back, home, enter, "
@@ -167,5 +229,10 @@ def register(mcp) -> None:
         k = KEYMAP.get(key.strip().lower())
         if not k:
             return {"error": f"unknown key {key!r}", "valid": sorted(KEYMAP)}
+        if k == "KEYCODE_ENTER":
+            els, pkg = _screen_now()
+            refused = _composer_refusal(els, pkg, "Enter")
+            if refused:
+                return refused
         dev.shell(f"input keyevent {k}")
         return {"pressed": key}

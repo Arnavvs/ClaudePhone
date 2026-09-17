@@ -90,6 +90,33 @@ def _swipe(obs: Observer, direction: str, duration_ms: int = 220) -> None:
                 duration=duration_ms / 1000.0)
 
 
+def _swipe_gate(o: Observer, direction: str):
+    """Ledger check for a swipe that advances an Instagram reel (B2b).
+
+    -> (decision or None, refusal dict or None). A forward swipe on a reel
+    viewer is a feed_reel (Reels tab) or reel_open (viewer opened from a grid);
+    anything else is not counted.
+    """
+    from ..policy import reads
+    # _swipe treats anything it does not know as "up", so the gate must too.
+    if DIRECTIONS.get(direction, DIRECTIONS["up"]) != DIRECTIONS["up"]:
+        return None, None
+    cur = o.last or o.look()
+    action = reads.reel_advance_action(cur.elements, cur.package)
+    if not action:
+        return None, None
+    d = reads.acquire(action, "ig", target="swipe")
+    if not d.allowed:
+        return d, reads.refusal(d)
+    return d, None
+
+
+def _swipe_commit(d) -> None:
+    if d is not None:
+        from ..policy import reads
+        reads.commit(d, target="swipe")
+
+
 def _obstructed(obs) -> Optional[list]:
     """Compact description of windows over the app, or None when clear."""
     rows = getattr(obs, "obstructions", None) or []
@@ -213,6 +240,15 @@ def register(reg) -> None:
         if not decision.allowed:
             return {"error": "not tapped: write refused", "write": decision.to_dict(),
                     **({"check": tg.public(check)} if check else {})}
+        # B2b: a tap that opens a budgeted read (profile, sheet, comments, reel).
+        from ..policy import reads
+        read_gate = None
+        _, count_action = reads.classify_tap_count(target, fresh, int(x), int(y), pkg)
+        if count_action and decision.verdict.kind == "read":
+            read_gate = reads.acquire(count_action, reads.platform_of(pkg),
+                                      serial=serial)
+            if not read_gate.allowed:
+                return reads.refusal(read_gate)
         kind, d = _act(o)
         act = ((lambda: d.tap(int(x), int(y))) if kind == "bridge"
                else (lambda: d.click(x, y)))
@@ -230,6 +266,10 @@ def register(reg) -> None:
             warn = wr.commit(decision, serial=serial)
             if warn:
                 res["write_warning"] = warn
+        if read_gate is not None:
+            reads.commit(read_gate, target=(target.text or target.desc or target.rid)
+                         if target is not None else "", serial=serial)
+            res["read"] = read_gate.to_dict()
         res["ver"] = state.version()
         return res
 
@@ -243,8 +283,14 @@ def register(reg) -> None:
     )
     def swipe_and_see(direction: str = "up", timeout_s: float = 6.0) -> dict:
         o = observer()
+        gate, refused = _swipe_gate(o, direction)
+        if refused:
+            return refused
         res = o.act_and_observe(lambda: _swipe(o, direction),
                                 timeout_s=timeout_s)
+        _swipe_commit(gate)
+        if gate is not None:
+            res["read"] = gate.to_dict()
         if not res.get("changed") and o.last is not None:
             blocked = o.explain_empty(o.last)
             if blocked:
@@ -279,8 +325,14 @@ def register(reg) -> None:
     def feed_next(direction: str = "up", timeout_s: float = 6.0,
                   settle_s: float = 0.4) -> dict:
         o = observer()
+        gate, refused = _swipe_gate(o, direction)
+        if refused:
+            return refused
         res = o.act_and_observe(lambda: _swipe(o, direction),
                                 timeout_s=timeout_s)
+        _swipe_commit(gate)
+        if gate is not None:
+            res["read"] = gate.to_dict()
         if settle_s:
             time.sleep(settle_s)
             after = o.look()
@@ -315,6 +367,7 @@ def register(reg) -> None:
         seen: set = set()
         repeats = 0
         stopped = "count reached"
+        counted: dict = {}
 
         o.look()
         for n in range(count):
@@ -322,7 +375,14 @@ def register(reg) -> None:
                 stopped = "max_seconds"
                 break
             before = o.last
+            gate, refused = _swipe_gate(o, direction)
+            if refused:
+                stopped = "ledger: " + refused["read"].get("why", "refused")
+                break
             _swipe(o, direction)
+            _swipe_commit(gate)
+            if gate is not None:
+                counted[gate.action] = counted.get(gate.action, 0) + 1
             after, waited = o.wait_for_change(timeout_s=timeout_s,
                                               baseline=before)
             if after is None:
@@ -355,6 +415,7 @@ def register(reg) -> None:
             "seconds": round(time.time() - started, 1),
             "screen_reads": o.reads,
             "package": (o.last.package if o.last else None),
+            **({"ledger_counted": counted} if counted else {}),
             "items": items,
         }
 
@@ -381,7 +442,11 @@ def register(reg) -> None:
                         "elements": uix.compact(hits, limit=8)}
             if n == max_swipes:
                 break
+            gate, refused = _swipe_gate(o, direction)
+            if refused:
+                return {"found": False, "after_swipes": n, **refused}
             _swipe(o, direction)
+            _swipe_commit(gate)
             time.sleep(settle_s)
         return {"found": False, "after_swipes": max_swipes,
                 "hint": "not on screen within " + str(max_swipes) + " swipes; "
@@ -432,6 +497,8 @@ def register(reg) -> None:
         out["auth"] = br.bridge(o.serial).auth
         if br.last_heal:
             out["self_healed"] = dict(br.last_heal)
+        if br.last_yield:
+            out["u2_yielded"] = dict(br.last_yield)
         if out["reachable"]:
             try:
                 out["health"] = br.bridge(o.serial).health()

@@ -202,6 +202,11 @@ not for transport latency. Details: **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**
   follow / interested / not interested / Telegram join run only when enabled for
   the run (`--allow-write follow`) and the datacollect ledger has budget left for
   that phone's account. See `policy/writes.json`.
+- **Budgeted reads are counted in the same ledger** — profile opens, grid scans,
+  reels, sheets, comment sheets, searches, Telegram chat opens — and paced to its
+  per-minute ceiling. With no ledger reachable (on the phone itself) they are
+  refused unless you pass `--allow-uncounted-reads`. Typing into a comment or
+  message box is refused. See `policy/reads.py`.
 - Automated collection generally breaches the terms of the platforms in the app
   packs. Wrapping it in an agent changes the convenience, not the permission.
 

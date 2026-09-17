@@ -23,9 +23,14 @@ def register(mcp) -> None:
         if not hits:
             return {"error": "clips_tab not found - is Instagram foreground?",
                     "foreground": dev.foreground()}
+        from ...policy import reads
+        gate = reads.acquire("feed_reel", "ig", target="reels_tab")
+        if not gate.allowed:
+            return reads.refusal(gate, reset=False)
         x, y = hits[0].center
         dev.shell(f"input tap {x} {y}")
+        reads.commit(gate, target="reels_tab")
         time.sleep(max(0.0, settle_seconds))
-        return {"reset": True, "tapped": [x, y],
+        return {"reset": True, "tapped": [x, y], "read": gate.to_dict(),
                 "note": "re-run extract_fields; discard any reel still "
                         "reporting reels_overlay_missing"}
