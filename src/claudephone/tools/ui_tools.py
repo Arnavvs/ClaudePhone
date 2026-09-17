@@ -33,8 +33,9 @@ def register(mcp) -> None:
         description=(
             "Read the current screen as structured elements. This is the primary "
             "way to see the device - use it instead of screenshot. Returns "
-            "elements with index `i` (for tap), resource-id, text, content-desc, "
-            "tap centre `c`, and flags `f` (C=clickable S=scrollable *=selected). "
+            "elements with index `i`, resource-id, text, content-desc, tap centre "
+            "`c`, and flags `f` (C=clickable S=scrollable *=selected h=hidden), "
+            "plus `ver`: tap with ref='<ver>_<i>'. "
             "Also names the screen and reports selector drift for known apps."
         )
     )
@@ -64,6 +65,8 @@ def register(mcp) -> None:
             "screen": screen,
             "dump_ms": ms,
             "signature": uix.screen_signature(elements),
+            # Refs for tap/long_press are "<ver>_<i>".
+            "ver": state.version(),
             "total_elements": len(elements),
             "returned": min(len(shown), limit),
             "elements": uix.compact(shown, limit=limit),
@@ -85,7 +88,8 @@ def register(mcp) -> None:
         elements, *_ = _context(d.dump_hierarchy())
         hits = uix.find(elements, query=query, rid=resource_id,
                         clickable_only=clickable_only)
-        return {"matches": len(hits), "elements": uix.compact(hits, limit=limit)}
+        return {"matches": len(hits), "ver": state.version(),
+                "elements": uix.compact(hits, limit=limit)}
 
     @mcp.tool(
         description=(
@@ -109,6 +113,8 @@ def register(mcp) -> None:
             return {"error": "screen not recognised", "app": app_name,
                     "app_version": version,
                     "signature": uix.screen_signature(elements),
+            # Refs for tap/long_press are "<ver>_<i>".
+            "ver": state.version(),
                     "hint": "inspect with ui_dump, then record_baseline"}
 
         fields = reg.extract_fields(app_name, version, scr, elements)

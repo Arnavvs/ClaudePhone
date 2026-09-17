@@ -25,57 +25,88 @@ def _screen_wh() -> tuple[int, int]:
         return 1080, 2400
 
 
+def _dispatch_tap(x: int, y: int, hold_ms: int = 0) -> dict:
+    """Tap (or hold) through the bridge when it is up - it reports `lands_on` -
+    otherwise through `input`."""
+    from ..runtime import bridge as br
+    if br.available():
+        b = br.bridge()
+        ok = b.tap(int(x), int(y), ms=hold_ms or 50)
+        out = {"ok": ok, "via": "bridge"}
+        lands = (b.last_tap or {}).get("lands_on") or {}
+        if lands.get("covered") and not lands.get("bar"):
+            out["landed_on"] = lands
+        return out
+    if hold_ms:
+        dev.shell(f"input swipe {x} {y} {x} {y} {hold_ms}")
+    else:
+        dev.shell(f"input tap {x} {y}")
+    return {"ok": True, "via": "input"}
+
+
+def _tap(ref: str, i: Optional[int], x: Optional[int], y: Optional[int],
+         verify: bool, hold_ms: int) -> dict:
+    """Shared body of tap and long_press: resolve, verify, dispatch."""
+    from ..runtime import targeting as tg
+    verb = "long_pressed" if hold_ms else "tapped"
+    if ref or i is not None:
+        el, err = tg.from_cache(i=i, ref=ref)
+        if err:
+            return err
+        if not verify:
+            px, py = el.center
+            res = {verb: {"x": px, "y": py}, "element": el.to_dict(),
+                   "check": "skipped (verify=false)"}
+            res.update(_dispatch_tap(px, py, hold_ms))
+            return res
+        chk = tg.check_target(el)
+        if chk["status"] not in tg.PROCEED:
+            return {"error": "not " + verb + ": " + chk["status"], "check": chk}
+        px, py = chk["tap"]
+        res = {verb: {"x": px, "y": py}, "check": chk}
+        res.update(_dispatch_tap(px, py, hold_ms))
+        return res
+    if x is None or y is None:
+        return {"error": "give `ref`, `i`, or both x and y"}
+    res: dict = {verb: {"x": int(x), "y": int(y)}}
+    if verify:
+        pt = tg.check_point(int(x), int(y))
+        if pt.get("obstructed_by"):
+            return {"error": "not " + verb + ": obstructed", "check": pt,
+                    "hint": "a window covers that point; dismiss it, or pass "
+                            "verify=false if you really mean to hit it"}
+        res["check"] = pt
+    res.update(_dispatch_tap(int(x), int(y), hold_ms))
+    return res
+
+
 def register(mcp) -> None:
 
     @mcp.tool(
         description=(
-            "Tap the screen. Give either `i` (element index from the last "
-            "ui_dump) or explicit x/y. `i` is preferred: it is resolution "
-            "independent and self-documenting."
+            "Tap an element. Prefer `ref` ('<ver>_<i>': `ver` and `i` from your "
+            "latest screen read); a bare `i` also works; x/y is a last resort. "
+            "Before tapping, the screen is read again and the element found "
+            "again: if it moved the tap follows it, and if it is gone, covered "
+            "or replaced the tap is REFUSED with the reason. A refusal means "
+            "read the screen again - do not retry the same ref."
         )
     )
-    def tap(i: Optional[int] = None, x: Optional[int] = None,
-            y: Optional[int] = None) -> dict:
-        if i is not None:
-            els = state.last.get("elements") or []
-            if not els:
-                return {"error": "no cached ui_dump; call ui_dump first"}
-            if i < 0 or i >= len(els):
-                return {"error": f"index {i} out of range (0..{len(els)-1})"}
-            px, py = els[i].center
-            dev.shell(f"input tap {px} {py}")
-            r = {"tapped": {"i": i, "x": px, "y": py},
-                 "element": els[i].to_dict()}
-            age = state.cache_age()
-            if age > state.STALE_AFTER_S:
-                r["stale_warning"] = (
-                    f"cached dump was {int(age)}s old; re-dump if this misfired"
-                )
-            return r
-        if x is None or y is None:
-            return {"error": "give either `i` or both x and y"}
-        dev.shell(f"input tap {int(x)} {int(y)}")
-        return {"tapped": {"x": int(x), "y": int(y)}}
+    def tap(ref: str = "", i: Optional[int] = None, x: Optional[int] = None,
+            y: Optional[int] = None, verify: bool = True) -> dict:
+        return _tap(ref, i, x, y, verify, hold_ms=0)
 
     @mcp.tool(
         description=(
             "Long-press an element or coordinate, e.g. to open a context menu. "
-            "duration_ms defaults to 700."
+            "Same `ref` / `i` / x,y rules and pre-tap check as tap. duration_ms "
+            "defaults to 700."
         )
     )
-    def long_press(i: Optional[int] = None, x: Optional[int] = None,
-                   y: Optional[int] = None, duration_ms: int = 700) -> dict:
-        if i is not None:
-            els = state.last.get("elements") or []
-            if not els or i >= len(els):
-                return {"error": "bad index; call ui_dump first"}
-            x, y = els[i].center
-        if x is None or y is None:
-            return {"error": "give either `i` or both x and y"}
-        dev.shell(f"input swipe {int(x)} {int(y)} {int(x)} {int(y)} "
-                  f"{int(duration_ms)}")
-        return {"long_pressed": {"x": int(x), "y": int(y),
-                                 "duration_ms": duration_ms}}
+    def long_press(ref: str = "", i: Optional[int] = None,
+                   x: Optional[int] = None, y: Optional[int] = None,
+                   duration_ms: int = 700, verify: bool = True) -> dict:
+        return _tap(ref, i, x, y, verify, hold_ms=int(duration_ms))
 
     @mcp.tool(
         description="Swipe. direction: up|down|left|right, or give explicit "

@@ -51,8 +51,8 @@ Loaded by default. Enough to orient on any screen and find more tools.
 | `stop_app` | `(package)` | Force-stop an app |
 | `swipe` | `(direction?, x1?, y1?, x2?, y2?, duration_ms?)` | Swipe |
 | `swipe_and_see` ! | `(direction?, timeout_s?)` | Swipe and report what changed as a result |
-| `tap` | `(i?, x?, y?)` | Tap the screen |
-| `tap_and_see` ! | `(i?, x?, y?, timeout_s?)` | Tap something and report what changed as a result - the tap, the wait, and the verification in a single call |
+| `tap` | `(ref?, i?, x?, y?, verify?)` | Tap an element by ref `<ver>_<i>`; re-finds it on a fresh read first and refuses if it moved away, vanished, is hidden or covered |
+| `tap_and_see` ! | `(ref?, i?, x?, y?, timeout_s?, verify?)` | Tap something and report what changed as a result - same pre-tap check as `tap` |
 | `text_input` | `(text)` | Type text into the focused field |
 | `ui_dump` | `(query?, clickable_only?, limit?, include_system?)` | Read the current screen as structured elements |
 | `use_tools` | `(pack)` | Load a tool pack so its tools become callable |

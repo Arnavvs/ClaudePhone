@@ -129,6 +129,7 @@ def register(reg) -> None:
         after = o.look()
         if full or before is None:
             out = {"package": after.package, "activity": after.activity,
+                   "ver": state.version(),
                    "dump_ms": after.dump_ms,
                    "total_elements": len(after.elements),
                    "elements": after.compact(limit=limit)}
@@ -141,6 +142,7 @@ def register(reg) -> None:
             return out
         d = Observer.diff(before, after, limit=limit)
         d["package"] = after.package
+        d["ver"] = state.version()
         d["dump_ms"] = after.dump_ms
         over = _obstructed(after)
         if over:
@@ -170,24 +172,33 @@ def register(reg) -> None:
     @reg.tool(
         description=(
             "Tap something and report what changed as a result - the tap, the "
-            "wait, and the verification in a single call. Give either `i` (an "
-            "element index from your last look) or x/y. Returns the delta, not "
-            "the whole screen, and tells you plainly if nothing happened."
+            "wait, and the verification in a single call. Give `ref` "
+            "('<ver>_<i>' from your latest look), a bare `i`, or x/y. The "
+            "element is found again on a fresh read first: if it moved the tap "
+            "follows it; if it is gone, covered or replaced the tap is refused "
+            "with the reason. Returns the delta, not the whole screen."
         ),
         dangerous=True,
     )
-    def tap_and_see(i: int = -1, x: int = -1, y: int = -1,
-                    timeout_s: float = 6.0) -> dict:
+    def tap_and_see(ref: str = "", i: int = -1, x: int = -1, y: int = -1,
+                    timeout_s: float = 6.0, verify: bool = True) -> dict:
+        from ..runtime import targeting as tg
         o = observer()
-        if i >= 0:
-            els = state.last.get("elements") or []
-            if i >= len(els):
-                return {"error": "index " + str(i) + " is beyond the "
-                        + str(len(els)) + " elements in the last look",
-                        "hint": "call look() again - the screen has moved on"}
-            x, y = els[i].center
+        check = None
+        if ref or i >= 0:
+            el, err = tg.from_cache(i=None if ref else i, ref=ref)
+            if err:
+                return err
+            if verify:
+                check = tg.check_target(el, serial=o.serial)
+                if check["status"] not in tg.PROCEED:
+                    return {"error": "not tapped: " + check["status"],
+                            "check": check}
+                x, y = check["tap"]
+            else:
+                x, y = el.center
         if x < 0 or y < 0:
-            return {"error": "give either i (from your last look) or x and y"}
+            return {"error": "give ref, i (from your last look) or x and y"}
         kind, d = _act(o)
         act = ((lambda: d.tap(int(x), int(y))) if kind == "bridge"
                else (lambda: d.click(x, y)))
@@ -198,6 +209,9 @@ def register(reg) -> None:
                 # The tap went to a window over the app (keyboard, alert, chat
                 # head). Say so - otherwise "nothing changed" reads as a dead app.
                 res["tap_landed_on"] = lands
+        if check is not None and check["status"] != "same":
+            res["check"] = check
+        res["ver"] = state.version()
         return res
 
     @reg.tool(

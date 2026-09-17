@@ -24,9 +24,11 @@ Never chain two blind actions. If you did not look, you do not know.
 elements; a screenshot returns a file path you cannot read without a vision \
 model. Only screenshot when the content genuinely is not in the view tree \
 (canvas, video, custom-drawn UI).
-- **Tap by index.** `tap(i=12)` uses the element index from your most recent \
-ui_dump. Coordinates are a last resort - they break on any layout change, and a \
-stale index taps the wrong thing. Re-dump before tapping if you have acted since.
+- **Tap by ref.** Every screen read returns `ver`; tap with \
+`ref="<ver>_<i>"` using `i` from that read. The tap re-finds the element on a \
+fresh read first. If it answers VERSION_MISMATCH, disappeared, occupied, \
+ambiguous, hidden or obstructed, the screen moved: read it again and choose \
+again - never retry the same ref. Coordinates are a last resort.
 - **Never sleep blindly.** Use `wait_for(query=...)` after anything that loads. \
 A fixed sleep is either too short (you act on the old screen) or wasted time.
 - **`up` advances a feed.** swipe(direction="up") moves to the next reel/post.

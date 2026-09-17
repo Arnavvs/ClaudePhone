@@ -160,7 +160,7 @@ A raw uiautomator hierarchy for one Instagram reel is ~70 KB of XML.
 }
 ```
 
-`i` is the index `tap(i=…)` takes. `c` is the tap centre. `f` flags
+`i` is the element index; every read also returns `ver`, and taps take `ref="<ver>_<i>"`. Before tapping, the element is found again on a fresh read (`runtime/targeting.py`): if it moved the tap follows it, and if it is gone, replaced, hidden or covered by another window the tap is refused with the reason. A ref from an older screen version is refused outright. `c` is the tap centre. `f` flags
 `C`lickable / `S`crollable / selected. `screenshot` exists but returns a **file
 path**, never inline image data, so it cannot silently flood a context window.
 

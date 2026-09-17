@@ -176,7 +176,7 @@ It also passed:
   afterwards;
 - Termux (uid 10318) reading the token through loopback adb.
 
-### Force-stop switches the bridge OFF (both vendors' Android does this)
+### Force-stop switches the bridge OFF (measured on the Samsung; not yet re-checked on the realme)
 
 `am force-stop com.claudephone.bridge` does more than kill the process: Android
 removes the service from `enabled_accessibility_services` and sets
