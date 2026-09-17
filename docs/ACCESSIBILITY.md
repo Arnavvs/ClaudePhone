@@ -169,6 +169,54 @@ Verified on the realme (Android 14), 2026-09-17:
 A v0.1 bridge still works with the new client, which reports it as
 `auth: legacy_unauthenticated` so it gets upgraded.
 
+**Same suite on the Samsung SM-M215F (Android 12, One UI), 2026-09-17: all pass.**
+It also passed:
+- a slow client sending nothing, dropped at the 5 s read timeout;
+- 40 parallel long-polls → exactly 32 served, 8 refused with 503, still serving
+  afterwards;
+- Termux (uid 10318) reading the token through loopback adb.
+
+### Force-stop switches the bridge OFF (both vendors' Android does this)
+
+`am force-stop com.claudephone.bridge` does more than kill the process: Android
+removes the service from `enabled_accessibility_services` and sets
+`accessibility_enabled=0`. The process can come back (reading the token starts it),
+but the port stays refused.
+
+Anything that force-stops apps switches the bridge off until it is re-enabled: the
+Force stop button, Samsung Device Care optimisation, a cleaner app.
+
+The Python client now **self-heals**. When the bridge is unreachable, installed and
+no longer enabled, `available()` re-enables it once per process through the shell —
+the same write `android/build.sh install` makes. `bridge_status` reports it as
+`self_healed`.
+- Measured: force-stop → next `available()` → reachable again in 6.5 s, same token.
+- `CLAUDEPHONE_BRIDGE_AUTOHEAL=0` turns this off.
+
+### Other things measured on the Samsung
+- **uiautomator2 is unaffected** by enabling the bridge. The same screens were dumped
+  before and after:
+  - Settings: 123 nodes, 74 ids, identical attributes;
+  - Instagram: 164 → 165 nodes; the one new id is `video_states`, the playing
+    video's state; content descriptions 35 → 35.
+- **Screen off:** still serves while dozing, and after waking.
+- **Footprint:** 45 MB RSS, 0% CPU idle, standby bucket 10 (active).
+- **Text via `/text` works for Unicode** (`हिंदी ₹50 ✓` typed and read back), which
+  `adb input text` cannot do.
+- **Events:** `/changed` woke 0.07–0.13 s after a swipe. **Beware:** the first change
+  event arrives *mid-animation*. The Settings search icon read at y=659 / 410 / 471 at
+  the first event and settled at y=209, so tapping coordinates read at that moment
+  misses. Wait for the screen to settle before tapping.
+- **Windows:** One UI shows three systemui windows above apps — status bar (78 px),
+  navigation bar (126 px), and a 194×83 strip at top-centre (the privacy indicator).
+  All are correctly classified as bars. The volume panel shows as an obstruction.
+  With the notification shade open, the foreground is `com.android.systemui` via
+  `active_root_fallback`.
+- **Cost, before the lazy-package fix:** `/windows` took 11–25 ms here, because every
+  window's package costs a binder call into its node tree. The bridge now looks up
+  packages only for application windows and obstructions; bars get their title
+  instead. Result: `/windows` 3–5 ms and warm `/tree` 4–9 ms on the Samsung.
+
 ---
 
 ## API
@@ -219,7 +267,7 @@ Verified in Settings on the realme:
 - Opening search produced `ime_visible: true` with the Gboard window listed as an
   obstruction.
 - A tap on the keyboard reported `covered: true`.
-- Cost: `/windows` 3.5–4 ms server-side; warm `/tree` 8–12 ms on the phone.
+- Cost on the realme: `/windows` 3.5–4 ms server-side; warm `/tree` 8–12 ms on the phone (before the lazy-package change; see the Samsung section).
 
 ---
 

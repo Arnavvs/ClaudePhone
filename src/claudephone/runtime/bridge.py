@@ -338,6 +338,40 @@ class Bridge:
 
 _bridge: Optional[Bridge] = None
 _checked: Optional[bool] = None
+_heal_tried: set = set()
+# What the last self-heal did, for bridge_status: {"serial", "was_enabled", "now_reachable"}.
+last_heal: dict = {}
+
+
+def heal(serial: str = "") -> bool:
+    """Re-enable an installed bridge that Android switched off. Once per process.
+
+    Measured 2026-09-17 on the Samsung (Android 12): `am force-stop
+    com.claudephone.bridge` does not just kill the service - Android REMOVES it
+    from `enabled_accessibility_services` and sets `accessibility_enabled=0`.
+    The process can come back (reading the token starts it) while the port stays
+    refused. Anything that force-stops apps - Device Care optimisation, the
+    Force stop button, a cleaner - therefore switches the bridge off until
+    someone re-enables it. The operator already chose to enable it, so the
+    client restores that choice through the shell, the same write
+    `android/build.sh install` makes. CLAUDEPHONE_BRIDGE_AUTOHEAL=0 disables this.
+    """
+    if os.environ.get("CLAUDEPHONE_BRIDGE_AUTOHEAL", "1").lower() in ("0", "false", "no"):
+        return False
+    if serial in _heal_tried:
+        return False
+    _heal_tried.add(serial)
+    try:
+        if not Bridge.installed(serial) or Bridge.enabled(serial):
+            return False
+        Bridge.enable(serial)
+        time.sleep(2)
+        ok = bridge(serial).available(timeout=3)
+        last_heal.update({"serial": serial, "was_enabled": False,
+                          "now_reachable": ok, "at": time.time()})
+        return ok
+    except Exception:
+        return False
 
 
 def bridge(serial: str = "") -> Bridge:
@@ -372,4 +406,7 @@ def available(serial: str = "", recheck: bool = False) -> bool:
         return False
     if _checked is None or recheck:
         _checked = bridge(serial).available()
+        if not _checked and bridge(serial).auth in ("", "unavailable"):
+            # Unreachable, not refused: maybe Android switched the service off.
+            _checked = heal(serial)
     return _checked

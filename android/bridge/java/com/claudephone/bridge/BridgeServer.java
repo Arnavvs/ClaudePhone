@@ -267,12 +267,16 @@ class BridgeServer extends Thread {
                 boolean keepAll = q.containsKey("all");
                 // Elements of the ACTIVE window come first and are numbered exactly
                 // as in v0.1, so every index-based consumer keeps working.
+                Map<Integer, String> pkgs = new HashMap<>();
                 if (root != null) {
                     walk(root, "", els, limit, keepAll, null);
-                    r.put("package", String.valueOf(root.getPackageName()));
+                    String rootPkg = String.valueOf(root.getPackageName());
+                    r.put("package", rootPkg);
+                    // We already know the active window's package; do not ask again.
+                    pkgs.put(root.getWindowId(), rootPkg);
                 }
                 List<AccessibilityWindowInfo> ws = svc.windowsTopFirst();
-                describeWindows(ws, r);
+                describeWindows(ws, r, pkgs);
                 // Opt-in: append the other windows' elements, each tagged with the
                 // window it came from, e.g. a system dialog drawn over the app.
                 if ("all".equals(q.get("windows"))) {
@@ -295,7 +299,7 @@ class BridgeServer extends Thread {
                 break;
             }
             case "/windows": {
-                describeWindows(svc.windowsTopFirst(), r);
+                describeWindows(svc.windowsTopFirst(), r, new HashMap<>());
                 break;
             }
             case "/changed": {
@@ -358,8 +362,8 @@ class BridgeServer extends Thread {
      * or navigation bar: a keyboard, a system alert, a chat head, a volume panel.
      * Anything a tap aimed at the app could hit instead.
      */
-    private void describeWindows(List<AccessibilityWindowInfo> ws, JSONObject r)
-            throws Exception {
+    private void describeWindows(List<AccessibilityWindowInfo> ws, JSONObject r,
+                                 Map<Integer, String> pkgs) throws Exception {
         JSONArray list = new JSONArray();
         JSONArray obstructions = new JSONArray();
         boolean ime = false;
@@ -368,30 +372,35 @@ class BridgeServer extends Thread {
             if (w.isActive()) { activeLayer = w.getLayer(); break; }
         }
         Rect b = new Rect();
-        Map<Integer, String> pkgs = new HashMap<>();
         for (AccessibilityWindowInfo w : ws) {
             w.getBoundsInScreen(b);
-            String type = BridgeService.windowType(w.getType());
+            int t = w.getType();
+            boolean bar = svc.isBar(w, b);
+            boolean above = activeLayer != Integer.MIN_VALUE && w.getLayer() > activeLayer;
+            boolean obstruction = above && !w.isActive()
+                    && t != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY
+                    && t != AccessibilityWindowInfo.TYPE_SPLIT_SCREEN_DIVIDER
+                    && !bar;
+            // The package costs a binder call into the window's node tree - on
+            // the Samsung (Exynos 9611) that made /windows 11-25 ms, most of a
+            // read. Only application windows (foreground) and obstructions need
+            // it; bars and overlays get their title, which is already local.
+            boolean needPkg = t == AccessibilityWindowInfo.TYPE_APPLICATION || obstruction;
             JSONObject o = new JSONObject()
                     .put("id", w.getId())
-                    .put("type", type)
+                    .put("type", BridgeService.windowType(t))
                     .put("layer", w.getLayer())
-                    .put("pkg", BridgeService.pkgOf(w, pkgs))
+                    .put("pkg", needPkg ? BridgeService.pkgOf(w, pkgs) : "")
                     .put("active", w.isActive())
                     .put("focused", w.isFocused())
                     .put("b", new JSONArray().put(b.left).put(b.top)
                                              .put(b.right).put(b.bottom));
-            if (w.getType() == AccessibilityWindowInfo.TYPE_INPUT_METHOD) ime = true;
+            CharSequence title = w.getTitle();
+            if (title != null) o.put("title", title.toString());
+            if (bar) o.put("bar", true);
+            if (t == AccessibilityWindowInfo.TYPE_INPUT_METHOD) ime = true;
             list.put(o);
-
-            boolean above = activeLayer != Integer.MIN_VALUE && w.getLayer() > activeLayer;
-            int t = w.getType();
-            if (above && !w.isActive()
-                    && t != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY
-                    && t != AccessibilityWindowInfo.TYPE_SPLIT_SCREEN_DIVIDER
-                    && !svc.isBar(w, b)) {
-                obstructions.put(o);
-            }
+            if (obstruction) obstructions.put(o);
         }
         String[] fg = svc.foreground(ws, pkgs);
         r.put("windows", list);

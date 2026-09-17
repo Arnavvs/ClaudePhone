@@ -397,6 +397,8 @@ def register(reg) -> None:
                      "enabled": br.Bridge.enabled(o.serial),
                      "reachable": br.available(o.serial, recheck=True)}
         out["auth"] = br.bridge(o.serial).auth
+        if br.last_heal:
+            out["self_healed"] = dict(br.last_heal)
         if out["reachable"]:
             try:
                 out["health"] = br.bridge(o.serial).health()
