@@ -156,8 +156,10 @@ def assemble_tweets(els) -> list[dict]:
 
 
 def _dump():
-    els = uix.parse(dev.u2().dump_hierarchy())
-    state.remember(els, X_PKG)
+    from ...runtime import targeting as tg
+    r = tg.read_screen()                              # bridge first (2e)
+    els = r["elements"]
+    state.remember(els, r.get("package") or X_PKG)
     return els
 
 

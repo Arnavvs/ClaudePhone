@@ -18,24 +18,23 @@ def register(mcp) -> None:
         )
     )
     def check_drift(app: str = "", screen: str = "") -> dict:
-        d = dev.u2()
-        xml = d.dump_hierarchy()
-        elements = uix.parse(xml)
-        live_ids = uix.all_resource_ids(xml)
-        fg = dev.foreground()
-        pkg = fg.get("package") or ""
+        from ..runtime import screen as scr
+        c = scr.context()
+        elements, live_ids, pkg = c["elements"], c["live_ids"], c["package"]
         app_name = app or state.APP_FOR_PKG.get(pkg, "")
         if not app_name:
             return {"error": f"no registry for {pkg!r}",
                     "known_apps": reg.known_apps()}
-        version = dev.app_version(pkg) or ""
-        scr = screen or reg.detect_screen(app_name, version, live_ids)
-        if not scr:
+        version = c["app_version"] or ""
+        which = screen or reg.detect_screen(app_name, version, live_ids)
+        if not which:
             return {"error": "screen not recognised", "app": app_name,
-                    "app_version": version,
+                    "app_version": version, "backend": c["backend"],
                     "signature": uix.screen_signature(elements),
                     "live_ids_sample": sorted(live_ids)[:40]}
-        return reg.check_drift(app_name, version, scr, live_ids).to_dict()
+        out = reg.check_drift(app_name, version, which, live_ids).to_dict()
+        out["backend"] = c["backend"]
+        return out
 
     @mcp.tool(
         description=(
@@ -45,19 +44,22 @@ def register(mcp) -> None:
         )
     )
     def record_baseline(app: str = "", screen: str = "") -> dict:
-        d = dev.u2()
-        xml = d.dump_hierarchy()
-        fg = dev.foreground()
-        pkg = fg.get("package") or ""
+        from ..runtime import screen as scr
+        c = scr.context()
+        pkg = c["package"]
         app_name = app or state.APP_FOR_PKG.get(pkg, "")
         if not app_name or not screen:
             return {"error": "both `app` and `screen` are required",
                     "detected_package": pkg}
-        version = dev.app_version(pkg) or "unknown"
-        ids = sorted(uix.all_resource_ids(xml))
+        version = c["app_version"] or "unknown"
+        ids = sorted(c["live_ids"])
         path = reg.record_baseline(app_name, version, screen, ids)
+        # Which backend recorded it: the two agree on the id SET (measured
+        # 2026-09-18, 0 missing either way), but say so rather than assume it
+        # forever - a mismatch here would look exactly like app drift.
         return {"recorded": {"app": app_name, "version": version,
-                             "screen": screen, "ids": len(ids)},
+                             "screen": screen, "ids": len(ids),
+                             "backend": c["backend"]},
                 "registry": path}
 
     @mcp.tool(

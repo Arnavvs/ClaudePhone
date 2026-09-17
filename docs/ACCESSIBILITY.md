@@ -307,18 +307,42 @@ server that stalled every other request behind it, including the `/tree` the
 caller needs the instant the wait returns. Each connection now gets its own
 thread.
 
-### Do not mix backends in one host process
+### The bridge is the default backend (since 2e)
 
-From a laptop the service is reached through `adb forward`. Once uiautomator2 is
-used **in the same Python process**, every adb-forwarded connection from that
-process starts returning an empty response — verified on two different local
-ports, while `curl` from another process kept working. The breakage is
-process-local to adb's client, not the service.
+It used to default to **off** on a host, with this reason recorded: *"once
+uiautomator2 is used in the same Python process, every adb-forwarded connection
+from that process returns an empty response — process-local to adb's client"*.
+That diagnosis was wrong; the cause is the device-wide suppression described
+above, which the client now recovers from in ~1.7 s.
 
-Because the legacy tools (`ui_dump`, `tap`, `swipe`) all go through u2, the
-bridge therefore **defaults to off when running on a host** and on when running
-on the phone, where no forward exists. Force it with `CLAUDEPHONE_BRIDGE=1` if
-you are testing the bridge alone.
+Every tool that READS the screen now goes through `runtime/screen.py` (`ui_dump`,
+`find_element`, `extract_fields`, `explore`, `check_drift`, `record_baseline`) or
+`targeting.read_screen` (the app tools), so a normal run no longer alternates.
+What still uses u2 does not dump the screen: the clipboard, gestures, screenshots.
+
+**`CLAUDEPHONE_BRIDGE=0` turns it off** and everything falls back to u2 dumps.
+
+Measured on Instagram, same screens, bridge vs u2 forced:
+
+| | dump | screen detected | drift | fields |
+|---|---|---|---|---|
+| Reels | **577 ms** vs 2866 ms | `reels_viewer` both | OK both | 13/13 identical |
+| profile | **495 ms** vs 2141 ms | unrecognised both | same both | — |
+
+The only field that differed was the caption, where u2's XML flattens emoji and
+the bridge does not.
+
+Two differences to know about:
+
+- **Element counts.** A u2 dump contains the status and navigation bars, since
+  they are in the same XML; a bridge read returns the app's own window. That is
+  the whole gap (49 vs 60 on Reels, 78 vs 85 on a profile). `ui_dump(include_system=true)`
+  reads every window and closes it.
+- **`live_ids` for drift checks** come from an all-windows read, which measured
+  as a superset of the raw XML ids on both Settings and Instagram (0 missing,
+  12–14 extra). Extras cannot cause false drift: drift is a baseline id
+  *missing* from the live screen. `record_baseline` now records which backend
+  took the baseline.
 
 **On the Samsung the cause is different and not process-local** (see
 [correction 1](#1-u2-and-a-custom-accessibilityservice-do-coexist--on-some-phones)):
@@ -349,8 +373,8 @@ under `profile_header_followers_stacked_familiar` instead of
 `profile_header_familiar_followers_value`, and every header lookup came back
 empty. `_elements_from` now prefers the node's own id, matching u2.
 
-`ui_dump`, the explore tools and the system tools still dump through u2 - they
-return raw XML or use u2 for other things - so the host default stays opt-in.
+`ui_dump`, the explore tools and the drift checks followed in 2e, through
+`runtime/screen.py`, and the bridge is now the default backend everywhere.
 
 ---
 

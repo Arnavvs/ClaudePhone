@@ -420,28 +420,32 @@ def bridge(serial: str = "") -> Bridge:
 def available(serial: str = "", recheck: bool = False) -> bool:
     """Is the bridge usable right now? Cached - probing costs a round trip.
 
-    OFF-DEVICE THIS DEFAULTS TO FALSE, because mixing backends in one process
-    costs a hand-back on every alternation.
+    USED WHEREVER IT IS REACHABLE, on a host as well as on the phone
+    (CLAUDEPHONE_BRIDGE=0 turns it off). That default was the other way round
+    until 2e, for a reason that turned out to be wrong twice over.
 
-    The original reason recorded here - "adb-forwarded connections go dead once
-    u2 is used in this process, so the breakage is process-local to adb's
-    client" - was WRONG, and the correction matters. Measured on the Samsung
-    (Android 12) 2026-09-17: while u2's UiAutomation runs, Android UNBINDS the
-    service device-wide. The port stops listening for on-device clients too, and
-    the service rebinds about 3 s after u2 stops. `Bridge._yield_u2` now stops
-    u2 and retries, which recovers in ~1.7 s.
+    What was recorded here - "adb-forwarded connections go dead once u2 is used
+    in this process, so the breakage is process-local to adb's client" - was not
+    the cause. Measured on the Samsung (Android 12) 2026-09-17: while u2's
+    UiAutomation runs, Android UNBINDS the service device-wide; the port stops
+    listening for on-device clients too, and it rebinds about 3 s after u2 stops.
+    `Bridge._yield_u2` handles that by stopping u2 and retrying (~1.7 s).
 
-    So a host session that alternates backends works, it just pays ~3.5 s a
-    switch. The Instagram tools read through `targeting.read_screen` (bridge
-    first) for that reason; `ui_dump`, `explore` and the system tools still dump
-    through u2, which is why this default has not been flipped.
+    The remaining objection was that a host run alternating backends pays ~3.5 s
+    a switch, and most tools dumped through u2. They no longer do:
+    `runtime/screen.py` reads for `ui_dump`, `find_element`, `extract_fields`,
+    `explore`, `check_drift` and `record_baseline`, and the app tools read
+    through `targeting.read_screen`. What is left on u2 does not dump the
+    screen - the clipboard, screenshots, gestures.
 
-    Set CLAUDEPHONE_BRIDGE=1 to force it on a host: worth it when the run is
-    Instagram work, where a dump costs 31 ms instead of ~2 s.
+    Measured on Instagram, same screens: a dump is 495-577 ms through the bridge
+    against 2141-2866 ms through u2, with identical screen detection, identical
+    drift status and 13/13 identical extracted fields - the caption differs only
+    because u2's XML flattens emoji.
     """
     global _checked
-    force = os.environ.get("CLAUDEPHONE_BRIDGE", "").lower() in ("1", "true", "yes")
-    if not dev.on_device() and not force:
+    setting = os.environ.get("CLAUDEPHONE_BRIDGE", "").lower()
+    if setting in ("0", "false", "no"):
         return False
     if _checked is None or recheck:
         _checked = bridge(serial).available()

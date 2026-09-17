@@ -55,7 +55,7 @@ Loaded by default. Enough to orient on any screen and find more tools.
 | `tap` | `(ref?, i?, x?, y?, verify?)` | Tap an element by ref `<ver>_<i>`; re-finds it on a fresh read first and refuses if it moved away, vanished, is hidden or covered. Account writes are gated, and taps that open a budgeted read (profile, More sheet, comments, grid tile) are counted in the ledger |
 | `tap_and_see` ! | `(ref?, i?, x?, y?, timeout_s?, verify?)` | Tap something and report what changed as a result - same pre-tap check as `tap` |
 | `text_input` | `(text)` | Type text into the focused field. Refused in a comment / message box; an Instagram search counts as `search` |
-| `ui_dump` | `(query?, clickable_only?, limit?, include_system?)` | Read the current screen as structured elements |
+| `ui_dump` (reports `backend`) | `(query?, clickable_only?, limit?, include_system?)` | Read the current screen as structured elements |
 | `use_tools` | `(pack)` | Load a tool pack so its tools become callable |
 | `wait_stable` | `(quiet_s?, timeout_s?)` | Wait until the screen stops changing, i.e |
 

@@ -279,13 +279,12 @@ def register(mcp) -> None:
     def wait_for(query: str = "", resource_id: str = "",
                  timeout_s: float = 10.0, poll_s: float = 0.6) -> dict:
         from .. import ui as uix
-        d = dev.u2()
+        from ..runtime import targeting as tg
         deadline = time.time() + max(0.5, timeout_s)
         polls = 0
         while time.time() < deadline:
             polls += 1
-            xml = d.dump_hierarchy()
-            els = uix.parse(xml)
+            els = tg.read_screen()["elements"]        # bridge first (2e)
             state.remember(els)
             hits = uix.find(els, query=query, rid=resource_id)
             if hits:

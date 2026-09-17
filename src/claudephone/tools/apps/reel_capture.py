@@ -163,7 +163,8 @@ def register_full(mcp) -> None:
 
         def scrubber_ms():
             """Current playback position, or None when not exposed."""
-            els = uix.parse(dev.u2().dump_hierarchy())
+            from ...runtime import targeting as tg
+            els = tg.read_screen()["elements"]        # bridge first (2e)
             v = uix.first_value(els, "scrubber", prefer="text")
             try:
                 return float(v) if v is not None else None
