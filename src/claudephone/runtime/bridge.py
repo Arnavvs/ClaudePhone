@@ -193,11 +193,17 @@ class Bridge:
             raise BridgeError("bridge HTTP " + str(e.code) + ": "
                               + str(body.get("error", ""))[:200]) from None
         except Exception as e:
-            # Off-device we reach the service through an adb forward, and that
-            # forward is not ours alone: uiautomator2 manages its own forwards
-            # and tears ours down when it (re)connects. The symptom is a dead
-            # socket mid-run - "Remote end closed connection without response".
-            # Re-establish and retry once before reporting failure.
+            # A dead socket mid-run - "Remote end closed connection without
+            # response" - has had two causes:
+            #   1. uiautomator2 suppressing the service. Measured on the Samsung
+            #      (Android 12): while u2's UiAutomation runs, Android unbinds the
+            #      bridge and its HTTP server stops; stopping u2 rebinds it in
+            #      about 3 s. If this process holds a u2 session, hand the phone
+            #      back and wait for the bridge before retrying.
+            #   2. the adb forward being replaced (off-device only). Re-forward.
+            if _retry and dev.u2_active(self.serial) and self._yield_u2():
+                return self._get(path, timeout=timeout, _retry=False,
+                                 _reauth=_reauth)
             if _retry and not dev.on_device():
                 self._forwarded = False
                 self._ensure_forward()
@@ -207,6 +213,27 @@ class Bridge:
                 raise BridgeError("bridge unreachable at " + self.base + path
                                   + ": " + str(e.reason)) from None
             raise BridgeError(type(e).__name__ + ": " + str(e)[:200]) from None
+
+    def _yield_u2(self, wait_s: float = 8.0) -> bool:
+        """Stop this process's u2 session and wait for the bridge to serve again."""
+        global last_yield
+        t0 = time.time()
+        dev.release_u2()
+        self._forwarded = False
+        while time.time() - t0 < wait_s:
+            time.sleep(0.5)
+            try:
+                self._ensure_forward()
+                with urllib.request.urlopen(self.base + "/health", timeout=1.5) as r:
+                    if json.loads(r.read().decode()).get("ok"):
+                        last_yield = {"serial": self.serial, "ok": True,
+                                      "seconds": round(time.time() - t0, 1)}
+                        return True
+            except Exception:
+                self._forwarded = False
+        last_yield = {"serial": self.serial, "ok": False,
+                      "seconds": round(time.time() - t0, 1)}
+        return False
 
     # -- status --------------------------------------------------------------
 
@@ -339,6 +366,8 @@ class Bridge:
 _bridge: Optional[Bridge] = None
 _checked: Optional[bool] = None
 _heal_tried: set = set()
+# What the last u2 hand-back did (see Bridge._yield_u2), for bridge_status.
+last_yield: dict = {}
 # What the last self-heal did, for bridge_status: {"serial", "was_enabled", "now_reachable"}.
 last_heal: dict = {}
 

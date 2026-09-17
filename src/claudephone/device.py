@@ -283,8 +283,12 @@ _u2_serial = None
 def u2(serial: str = ""):
     """Shared uiautomator2 connection.
 
-    NOTE: uiautomator2 is itself a UiAutomation (a special AccessibilityService)
-    and CANNOT coexist with a custom AccessibilityService. Android permits one.
+    uiautomator2 is a UiAutomation. Whether it coexists with the ClaudePhone
+    bridge (an AccessibilityService) depends on the phone: on the realme
+    (Android 14) both serve at once; on the Samsung M21 (Android 12, u2 3.7.0)
+    Android UNBINDS the bridge for as long as u2's UiAutomation runs, measured
+    2026-09-17. runtime/bridge.py hands the phone back with release_u2() when a
+    bridge request fails while this process holds a u2 session.
     """
     global _u2_conn, _u2_serial
     s = serial or default_serial()
@@ -294,3 +298,22 @@ def u2(serial: str = ""):
     _u2_conn = uiautomator2.connect(s) if s else uiautomator2.connect()
     _u2_serial = s
     return _u2_conn
+
+
+def u2_active(serial: str = "") -> bool:
+    """True if this process started a u2 session on that phone (or any, if no serial)."""
+    return _u2_conn is not None and (not serial or _u2_serial in ("", serial))
+
+
+def release_u2() -> bool:
+    """Stop this process's uiautomator2 server so an AccessibilityService it
+    suppressed can rebind. The next u2() call starts a fresh one."""
+    global _u2_conn, _u2_serial
+    if _u2_conn is None:
+        return False
+    try:
+        _u2_conn.stop_uiautomator()
+    except Exception:
+        pass
+    _u2_conn, _u2_serial = None, None
+    return True

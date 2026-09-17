@@ -55,7 +55,7 @@ waits** — see [the race](#the-race-worth-knowing-about).
 
 ## Two corrections to earlier project beliefs
 
-### 1. u2 and a custom AccessibilityService DO coexist
+### 1. u2 and a custom AccessibilityService DO coexist — on some phones
 
 Every earlier document in this project (and MobileAgentMCP before it) stated
 that they could not:
@@ -76,6 +76,15 @@ accessibility service is ENABLED; can uiautomator2 still run?
 So the bridge is an **addition**, not a replacement. `Observer` prefers it and
 falls back to u2 when it is not installed, which is why every existing tool got
 faster without being touched.
+
+**Not on the Samsung M21 (Android 12, uiautomator2 3.7.0), measured 2026-09-17.**
+While u2's UiAutomation runs, Android unbinds the bridge: `dumpsys accessibility`
+drops it from *bound services*, port 8766 stops listening, and even an on-device
+`nc 127.0.0.1 8766` gets nothing. Enabled state and process are untouched.
+`stop_uiautomator()` rebinds it in about 3 s; ending the Python process that
+started u2 does too. u2 itself keeps working. See
+[Do not mix backends](#do-not-mix-backends-in-one-host-process) for what the
+client does about it.
 
 ### 2. `settings put secure` is not blocked after all
 
@@ -310,6 +319,17 @@ Because the legacy tools (`ui_dump`, `tap`, `swipe`) all go through u2, the
 bridge therefore **defaults to off when running on a host** and on when running
 on the phone, where no forward exists. Force it with `CLAUDEPHONE_BRIDGE=1` if
 you are testing the bridge alone.
+
+**On the Samsung the cause is different and not process-local** (see
+[correction 1](#1-u2-and-a-custom-accessibilityservice-do-coexist--on-some-phones)):
+u2 suppresses the service for the whole phone, on-device clients included. The
+client now hands the phone back: when a bridge request dies and this process
+holds a u2 session, `Bridge._yield_u2()` stops u2 (`device.release_u2()`), waits
+for `/health`, and retries once. `bridge_status` reports it as `u2_yielded`.
+Measured: three u2-dump → bridge-tree rounds, each recovered in 1.7 s. The next
+u2 dump restarts u2 (about 1.7 s), so alternating backends costs ~3.5 s a switch.
+The fix that removes the cost is to read through the bridge in the app tools'
+own `_dump()` helpers (about 20 u2 call sites); not done yet.
 
 ---
 
