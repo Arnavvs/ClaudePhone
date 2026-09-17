@@ -89,7 +89,14 @@ def _elements_from(rows: list) -> list[Element]:
         out.append(Element(
             i=r.get("i", i),
             rid=r.get("id", "") or "",
-            anchor=r.get("anchor", "") or r.get("id", "") or "",
+            # u2's parser makes a node with an id its OWN anchor and passes
+            # that id down to anonymous children; the service sends the
+            # inherited anchor and the id separately, so own id wins here.
+            # Measured on an IG profile 2026-09-18: with the service's anchor
+            # preferred, values_by_anchor put "686M" under
+            # profile_header_followers_stacked_familiar (the PARENT) and every
+            # header lookup in ig_profile_stats came back empty.
+            anchor=r.get("id", "") or r.get("anchor", "") or "",
             text=r.get("text", "") or "",
             desc=r.get("desc", "") or "",
             cls=r.get("cls", "") or "",
@@ -413,21 +420,24 @@ def bridge(serial: str = "") -> Bridge:
 def available(serial: str = "", recheck: bool = False) -> bool:
     """Is the bridge usable right now? Cached - probing costs a round trip.
 
-    OFF-DEVICE THIS DEFAULTS TO FALSE, and the reason is a measured
-    incompatibility rather than caution:
+    OFF-DEVICE THIS DEFAULTS TO FALSE, because mixing backends in one process
+    costs a hand-back on every alternation.
 
-    From a laptop the service is reached through `adb forward`. Once
-    uiautomator2 is used **in the same Python process**, every adb-forwarded
-    connection from that process starts returning an empty response - verified
-    on two different local ports, while `curl` from another process kept
-    working. So the breakage is process-local to adb's client, not the service.
+    The original reason recorded here - "adb-forwarded connections go dead once
+    u2 is used in this process, so the breakage is process-local to adb's
+    client" - was WRONG, and the correction matters. Measured on the Samsung
+    (Android 12) 2026-09-17: while u2's UiAutomation runs, Android UNBINDS the
+    service device-wide. The port stops listening for on-device clients too, and
+    the service rebinds about 3 s after u2 stops. `Bridge._yield_u2` now stops
+    u2 and retries, which recovers in ~1.7 s.
 
-    Since the legacy tools (`ui_dump`, `tap`, `swipe`) all go through u2, a host
-    session would mix the two and break. On the phone the question does not
-    arise: Termux talks to 127.0.0.1:8766 directly and there is no forward.
+    So a host session that alternates backends works, it just pays ~3.5 s a
+    switch. The Instagram tools read through `targeting.read_screen` (bridge
+    first) for that reason; `ui_dump`, `explore` and the system tools still dump
+    through u2, which is why this default has not been flipped.
 
-    Set CLAUDEPHONE_BRIDGE=1 to force it on a host anyway - useful for testing
-    the bridge itself, as long as nothing calls u2 in the same process.
+    Set CLAUDEPHONE_BRIDGE=1 to force it on a host: worth it when the run is
+    Instagram work, where a dump costs 31 ms instead of ~2 s.
     """
     global _checked
     force = os.environ.get("CLAUDEPHONE_BRIDGE", "").lower() in ("1", "true", "yes")

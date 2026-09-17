@@ -328,8 +328,29 @@ holds a u2 session, `Bridge._yield_u2()` stops u2 (`device.release_u2()`), waits
 for `/health`, and retries once. `bridge_status` reports it as `u2_yielded`.
 Measured: three u2-dump → bridge-tree rounds, each recovered in 1.7 s. The next
 u2 dump restarts u2 (about 1.7 s), so alternating backends costs ~3.5 s a switch.
-The fix that removes the cost is to read through the bridge in the app tools'
-own `_dump()` helpers (about 20 u2 call sites); not done yet.
+**Done for the Instagram tools (2026-09-18).** Their shared `_dump()` reads
+through `targeting.read_screen` (bridge first, u2 fallback), so the scraping path
+no longer alternates. Measured on an `@instagram` profile, same screen:
+
+| | dump | `ig_profile_stats` | elements |
+|---|---|---|---|
+| bridge | **31 ms** | 0.04 s | 135 |
+| u2 (forced) | 2200 ms | 0.49 s | 85 |
+
+Every field the scraper returns matched - handle, name, posts, followers,
+following, verified, follow state, link, private - **except the bio, where the
+bridge is more accurate**: u2's XML dump flattens the emoji in
+"Discover what's new on Instagram 🔎✨" to "..", while the bridge keeps it.
+
+This needed one fix first. The two backends disagreed on what an *anchor* is: u2
+makes a node with an id its own anchor, while the service sends the inherited
+(parent) anchor alongside the id. `values_by_anchor` therefore filed "686M"
+under `profile_header_followers_stacked_familiar` instead of
+`profile_header_familiar_followers_value`, and every header lookup came back
+empty. `_elements_from` now prefers the node's own id, matching u2.
+
+`ui_dump`, the explore tools and the system tools still dump through u2 - they
+return raw XML or use u2 for other things - so the host default stays opt-in.
 
 ---
 

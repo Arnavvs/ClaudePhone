@@ -59,10 +59,19 @@ def parse_count(raw: str) -> Optional[int]:
 
 
 def _dump():
-    d = dev.u2()
-    xml = d.dump_hierarchy()
-    els = uix.parse(xml)
-    state.remember(els, IG_PKG)
+    """One screen read for the Instagram tools, bridge first.
+
+    Measured on the Samsung (Android 12) 2026-09-18: a u2 dump SUPPRESSES the
+    accessibility service, so a tool that dumps through u2 costs the next bridge
+    call a 1.7 s hand-back - the scrapers and the agent's own tools were paying
+    that on every alternation. targeting.read_screen prefers the bridge and
+    falls back to u2, and since the two now agree on anchors (runtime/bridge.py
+    _elements_from), values_by_anchor reads the same either way.
+    """
+    from ...runtime import targeting as tg
+    r = tg.read_screen()
+    els = r["elements"]
+    state.remember(els, r.get("package") or IG_PKG)
     return els
 
 

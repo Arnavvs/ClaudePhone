@@ -17,8 +17,8 @@ def register(mcp) -> None:
         )
     )
     def reset_reels_feed(settle_seconds: float = 3.0) -> dict:
-        d = dev.u2()
-        elements = uix.parse(d.dump_hierarchy())
+        from ...runtime import targeting as tg
+        elements = tg.read_screen()["elements"]          # bridge first, u2 fallback
         hits = uix.find(elements, rid="clips_tab")
         if not hits:
             return {"error": "clips_tab not found - is Instagram foreground?",
