@@ -20,6 +20,7 @@ from .harness.registry import ToolRegistry
 from .tools import (compound_tools, device_tools, explore_tools, file_tools,
                     input_tools, registry_tools, shell_tools, system_tools,
                     thread_tools, ui_tools)
+from .tools import handoff_tools
 from .tools import phone_tools
 from .tools.apps import instagram as ig_tools
 from .tools.apps import instagram_comments as ig_comments
@@ -44,6 +45,7 @@ def build_registry() -> ToolRegistry:
         device_tools.register(reg)
         ui_tools.register(reg)
         input_tools.register(reg)
+        handoff_tools.register(reg)
 
     # Compound actions belong in core: they are how the agent should move by
     # default, and gating them behind use_tools() would mean the expensive
@@ -121,7 +123,8 @@ def build_agent(provider: str = "", model: str = "", mode: str = "auto",
                 allow_writes: Optional[list[str]] = None,
                 allow_rules: Optional[list[str]] = None,
                 allow_uncounted_reads: bool = False,
-                stagnation: bool = True) -> Agent:
+                stagnation: bool = True,
+                on_ask_operator=None) -> Agent:
     cfg = ModelConfig.from_env(provider)
     if model:
         cfg.model = model
@@ -140,4 +143,5 @@ def build_agent(provider: str = "", model: str = "", mode: str = "auto",
         # B4: 0 disables the stop but keeps the warning, which is what an
         # operator watching a run by hand usually wants.
         stagnation=Stagnation() if stagnation else Stagnation(stop_after=0),
+        on_ask_operator=on_ask_operator,
     )

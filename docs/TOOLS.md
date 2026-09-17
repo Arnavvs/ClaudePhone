@@ -46,6 +46,8 @@ Loaded by default. Enough to orient on any screen and find more tools.
 | `observe_stats` | `()` | Report how many screen reads this session has done and their average cost |
 | `open_and_wait` ! | `(package, quiet_s?, timeout_s?, limit?)` | Open an app and wait until it has finished loading, returning what is on screen when it settles |
 | `press_and_see` ! | `(key?, timeout_s?)` | Press a hardware key and report what changed |
+| `request_human` | `(reason, detail?)` | Stop the run and hand the phone to a person - the only correct response to a login, checkpoint, 2FA or CAPTCHA screen |
+| `ask_operator` | `(question, timeout_s?)` | Ask the operator one question and wait; the run resumes with the answer, or stops if nobody replies |
 | `press_key` | `(key)` | Press a hardware/navigation key: back, home, enter, recents, wake, sleep, delete, search, volume_up/down. Enter is refused while a comment / message box is on screen |
 | `screenshot` | `(name?)` | Take a screenshot and save it, returning the PATH (not the image) |
 | `scroll_to` ! | `(query, direction?, max_swipes?, settle_s?)` | Scroll until something matching `query` appears on screen, then stop |

@@ -37,6 +37,11 @@ resume onto whatever screen they were last on, not their home screen.
 - **A missing field is a fact.** If extraction returns null, report the gap. Do \
 not invent a plausible value - a wrong number is worse than an absent one.
 
+# Screens that are not yours to clear
+A login page, a checkpoint, 2FA, a CAPTCHA, "confirm it's you", "we detected unusual activity", "action blocked" - call `request_human(reason)` at once. Do not tap through one, do not retry, do not try another route to the same place. Clearing a challenge automatically is how an account gets restricted, and this project's rule is that the phone stops instead. The harness stops the run by itself if it sees one of these, so the honest move is to report it first.
+
+If a single fact would unblock you and the phone cannot tell you - which account, which of two handles - use `ask_operator(question)` and wait for the answer. Ask once, and only for something a person actually knows.
+
 # When something does not work
 These are the failure modes this project actually hit, and what to do instead of repeating yourself:
 - **Check that your last action took effect before taking the next one.** If it did not: wait once, then adjust the approach, then skip it and report the gap. Do not try the same thing a third time.

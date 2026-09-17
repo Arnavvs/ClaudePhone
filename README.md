@@ -202,6 +202,10 @@ not for transport latency. Details: **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**
   follow / interested / not interested / Telegram join run only when enabled for
   the run (`--allow-write follow`) and the datacollect ledger has budget left for
   that phone's account. See `policy/writes.json`.
+- **A checkpoint stops the run, not the model's judgement.** Login, 2FA,
+  CAPTCHA, "unusual activity" and "action blocked" screens end the run with
+  `human_required`; `request_human` and `ask_operator` are the agent's own ways
+  to hand back. See `harness/handoff.py`.
 - **Budgeted reads are counted in the same ledger** — profile opens, grid scans,
   reels, sheets, comment sheets, searches, Telegram chat opens — and paced to its
   per-minute ceiling. With no ledger reachable (on the phone itself) they are

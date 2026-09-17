@@ -444,6 +444,39 @@ Verified from the Samsung over `adb reverse`: `/health` 200 without a token,
 `/budget` 401 without it and 200 with it, and @saravbhaita's ceilings came back
 scaled to 25% with the review note attached.
 
+### Handing back to a person, and the screens that are not ours to clear (B3)
+
+Two directions, and they are not the same:
+
+- **`request_human(reason)`** - the agent gives up; the run ends with
+  `stopped_by="human_required"` and the reason. Nothing waits.
+- **`ask_operator(question)`** - the agent needs one fact and can continue with
+  it. The run BLOCKS. On the CLI the question goes to the terminal; over HTTP the
+  task emits an `ask` event carrying a `session_id` and waits for
+  `POST /reply {"session_id", "answer"}`. No channel, or no answer in time, ends
+  the run rather than letting the model guess.
+
+The third path is not the model's to decide. Doctrine is that a phone meeting a
+checkpoint or 2FA **stops that account entirely**, and a cheap model looking at
+"We detected unusual activity" will keep tapping, because tapping is what it
+does. So `harness/handoff.py` checks every screen the loop sees, and a match ends
+the run whatever the model intended - before the next tool call, not after it.
+The prompt says the same in words; the guard is what actually holds.
+
+What it matches: suspicious/unusual activity, "confirm it's you", security
+checks and CAPTCHAs, "action blocked", "try again later", two-factor and code
+prompts, disabled or restricted accounts - plus **a password field**, which has
+no business appearing in a session on an account that is already signed in.
+Ordinary words like "Log in" are deliberately not matched; they appear on
+screens that are perfectly safe.
+
+Verified live: pointed at a page containing the phrase, the run stopped at step 1
+with `human_required` and the evidence attached. That run also shows the honest
+limitation - **it matches text, so a screen that merely mentions a challenge
+trips it too** (there, a search box containing the phrase). Stopping a run that
+did not need stopping is the cheap direction of that error, and
+`checkpoint_guard=False` exists for the rare case where it is wrong.
+
 ### A stuck run says so, instead of burning the budget (B4)
 
 Cheap models loop, and these apps give them reasons to: Instagram 446's search

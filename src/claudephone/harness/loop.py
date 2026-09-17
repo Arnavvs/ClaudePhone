@@ -15,6 +15,10 @@ Three things here are not standard loop boilerplate and are worth knowing about:
   set to ask, allow or deny without touching tool code.
 * **Budgets are enforced, not suggested.** Steps, wall-clock and token spend
   all terminate the run, and the reason is reported.
+* **A checkpoint ends a run immediately** (`harness/handoff.py`). Doctrine is
+  that a phone meeting a login, 2FA or "unusual activity" screen stops that
+  account; the model is told the same in the prompt, but the harness is what
+  enforces it, because a cheap model will keep tapping.
 * **Stagnation ends a run early** (`harness/stagnation.py`). Repeating one call
   on a screen that does not change is the usual way a cheap model burns a
   budget; it gets one warning it can act on, then the run stops with
@@ -31,7 +35,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Optional
 
-from . import recorder
+from . import handoff, recorder
 from .models import Chat, ModelError
 from .prompt import build_system
 from .registry import ToolRegistry
@@ -101,13 +105,15 @@ class Agent:
                  policy: Optional[Policy] = None,
                  budget: Optional[Budget] = None,
                  operator_notes: str = "",
-                 stagnation: Optional[Stagnation] = None) -> None:
+                 stagnation: Optional[Stagnation] = None,
+                 on_ask_operator=None) -> None:
         self.chat = chat
         self.reg = registry
         self.policy = policy or Policy()
         self.budget = budget or Budget()
         self.operator_notes = operator_notes
         self.stagnation = stagnation if stagnation is not None else Stagnation()
+        self.on_ask_operator = on_ask_operator
         self.messages: list[dict] = []
 
     # -- context -------------------------------------------------------------
@@ -151,6 +157,7 @@ class Agent:
         the stubs the conversation ends up holding.
         """
         rec = recorder.start(goal, self)
+        handoff.configure(ask=self.on_ask_operator)
         from ..policy import writes as wr
         wr.configure(mode=self.policy.mode, writes=self.policy.writes,
                      allow_rules=self.policy.allow_rules,
@@ -183,6 +190,13 @@ class Agent:
             raise
         finally:
             rec.close(outcome)
+
+    def _checkpoint(self) -> Optional[dict]:
+        """Is a login / 2FA / challenge screen showing? Doctrine: stop here."""
+        from .. import state
+        last = getattr(state, "last", None) or {}
+        return handoff.checkpoint_on_screen(last.get("elements") or [],
+                                            last.get("pkg") or "")
 
     def _run(self, goal: str) -> Iterator[dict]:
         started = time.time()
@@ -273,6 +287,30 @@ class Agent:
                        "ms": result.get("_ms"), "result": result}
 
                 advice = stag.observe(steps, name, args, fp_before) if stag else None
+
+                # A checkpoint outranks everything, including whatever the model
+                # meant to do next.
+                cp = self._checkpoint()
+                hand = result.get("_handoff") if isinstance(result, dict) else None
+                if cp or (hand and hand.get("kind") == "stop"):
+                    reason = (("checkpoint on screen: " + cp["why"]) if cp
+                              else hand.get("reason", ""))
+                    payload = {"type": "final",
+                               "content": reason,
+                               "stopped_by": "human_required",
+                               "steps": steps,
+                               "handoff": cp or hand,
+                               "seconds": round(time.time() - started, 1),
+                               "usage": dict(self.chat.total_usage)}
+                    yield {"type": "note", "step": steps,
+                           "reason": "checkpoint" if cp else "human_required",
+                           "message": reason}
+                    yield payload
+                    return
+                if hand and hand.get("kind") == "answered":
+                    yield {"type": "note", "step": steps, "reason": "operator",
+                           "message": "operator answered: "
+                                      + str(hand.get("answer"))[:200]}
 
                 payload = json.dumps(result, default=str)
                 if native:

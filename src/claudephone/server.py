@@ -7,6 +7,8 @@ this project:
   POST /task   a goal; the phone runs the entire   <- delegate mode
                agent loop locally and streams back
                what it did.
+  POST /reply  answers a question the running task <- the other direction
+               asked with `ask_operator`.
 
 Proxy mode is what an MCP setup does today: every step crosses the network, and
 the laptop's model waits on each one. Delegate mode sends one message, and the
@@ -38,6 +40,12 @@ from typing import Optional
 from . import device as dev
 from .agent import build_agent, build_registry
 from .harness.loop import Budget
+
+# Questions a running task is blocked on (B3): id -> {question, answer, event}.
+# The server is threaded, so a blocked /task does not block the /reply that
+# unblocks it.
+PENDING: dict = {}
+PENDING_LOCK = threading.Lock()
 
 CONFIG_DIR = os.path.expanduser("~/.claudephone")
 TOKEN_PATH = os.path.join(CONFIG_DIR, "token")
@@ -155,6 +163,8 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body()
         if path == "/tool":
             return self._do_tool(body)
+        if path == "/reply":
+            return self._do_reply(body)      # body is already read, above
         if path == "/task":
             return self._do_task(body)
         return self._send(404, {"error": "no such path: " + path})
@@ -185,6 +195,19 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, {"tool": name, "result": result,
                                 "ms": int((time.time() - t0) * 1000)})
 
+    def _do_reply(self, body: dict):
+        sid = str(body.get("session_id") or "").strip()
+        with PENDING_LOCK:
+            slot = PENDING.get(sid)
+        if slot is None:
+            return self._send(404, {"error": "no task is waiting on that "
+                                             "session_id",
+                                    "waiting": sorted(PENDING)})
+        slot["answer"] = str(body.get("answer") or body.get("reply") or "")
+        slot["event"].set()
+        return self._send(200, {"ok": True, "session_id": sid,
+                                "question": slot["question"]})
+
     def _do_task(self, body: dict):
         goal = (body.get("goal") or body.get("task") or "").strip()
         if not goal:
@@ -193,6 +216,25 @@ class Handler(BaseHTTPRequestHandler):
             max_steps=int(body.get("max_steps") or 30),
             max_seconds=float(body.get("max_seconds") or 900),
         )
+        session_id = secrets.token_hex(8)
+
+        def ask_operator(question: str, timeout_s: float):
+            """Block this task until POST /reply answers, or the wait ends."""
+            slot = {"question": question, "answer": None,
+                    "event": threading.Event()}
+            with PENDING_LOCK:
+                PENDING[session_id] = slot
+            try:
+                self._emit({"type": "ask", "session_id": session_id,
+                            "question": question, "timeout_s": timeout_s,
+                            "how": "POST /reply {\"session_id\": \"" + session_id
+                                   + "\", \"answer\": \"...\"}"})
+                slot["event"].wait(timeout=max(1.0, float(timeout_s)))
+                return slot["answer"]
+            finally:
+                with PENDING_LOCK:
+                    PENDING.pop(session_id, None)
+
         try:
             agent = build_agent(
                 provider=body.get("provider") or "",
@@ -207,12 +249,14 @@ class Handler(BaseHTTPRequestHandler):
                 allow_rules=body.get("allow_rules") or [],
                 allow_uncounted_reads=bool(body.get("allow_uncounted_reads")),
                 stagnation=bool(body.get("stagnation", True)),
+                on_ask_operator=ask_operator,
             )
         except Exception as e:
             return self._send(500, {"error": "could not build agent: "
                                              + str(e)[:400]})
         self._stream_start()
         try:
+            self._emit({"type": "session", "session_id": session_id})
             for event in agent.run(goal):
                 self._emit(event)
         except BrokenPipeError:
@@ -242,8 +286,8 @@ def serve(host: str = "127.0.0.1", port: int = 8765,
         print("  token     : " + Handler.token, flush=True)
     else:
         print("  auth      : none (loopback only)", flush=True)
-    print("  endpoints : GET /health  GET /tools  POST /tool  POST /task",
-          flush=True)
+    print("  endpoints : GET /health  GET /tools  POST /tool  POST /task  "
+          "POST /reply", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

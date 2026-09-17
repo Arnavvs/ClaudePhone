@@ -104,6 +104,17 @@ def cmd_run(a) -> int:
                 + ") [y/N] ", YELLOW), end="", flush=True)
         return input().strip().lower().startswith("y")
 
+    def ask_operator(question: str, timeout_s: float):
+        """The agent has one question and is waiting on the answer (B3)."""
+        if not sys.stdin or not sys.stdin.isatty():
+            return None                      # nobody at the keyboard: run stops
+        print(c("\n  ? the agent asks: " + question, YELLOW), flush=True)
+        print(c("    answer (empty to stop the run): ", YELLOW), end="", flush=True)
+        try:
+            return input().strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+
     agent = build_agent(
         provider=a.provider, model=a.model, mode=a.mode,
         allow=a.allow or [], deny=a.deny or [], packs=a.pack or [],
@@ -112,6 +123,7 @@ def cmd_run(a) -> int:
         allow_writes=a.allow_write or [], allow_rules=a.allow_rule or [],
         allow_uncounted_reads=a.allow_uncounted_reads,
         stagnation=not a.no_stagnation_stop,
+        on_ask_operator=ask_operator,
     )
     goal = " ".join(a.goal)
     failed = False
