@@ -920,6 +920,10 @@ def register(mcp) -> None:
     )
     def tg_search(query: str, tab: str = "", max_results: int = 20,
                   max_swipes: int = 6, settle_s: float = 1.2) -> dict:
+        from ...policy import reads
+        gate = reads.acquire("tg_search", "tg", target=query[:60])
+        if not gate.allowed:
+            return reads.refusal(gate)
         t0 = time.time()
         if dev.foreground().get("package") != TG_PKG:
             _open("", 4.5)
@@ -930,6 +934,7 @@ def register(mcp) -> None:
         if box is None:
             return {"error": "search box not found on the chat list",
                     "foreground": dev.foreground()}
+        reads.commit(gate, target=query[:60])
         _tap(box)
         time.sleep(1.2)
         typed = _type(query)
@@ -1329,6 +1334,11 @@ def register_search_in_chat(mcp) -> None:
     )
     def tg_search_in_chat(query: str, chat: str = "", max_results: int = 20,
                           max_swipes: int = 8, settle_s: float = 1.2) -> dict:
+        from ...policy import reads
+        gate = reads.acquire("tg_search", "tg", target=query[:60])
+        if not gate.allowed:
+            return reads.refusal(gate)
+        reads.commit(gate, target=query[:60])
         t0 = time.time()
         if chat:
             _, err = _open_guard(chat)

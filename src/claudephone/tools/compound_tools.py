@@ -104,6 +104,10 @@ def _swipe_gate(o: Observer, direction: str):
     cur = o.last or o.look()
     action = reads.reel_advance_action(cur.elements, cur.package)
     if not action:
+        if cur.package == "com.twitter.android":
+            refused = reads.bucketed("x_scroll", "x", target="swipe")
+            if refused is not None:
+                return refused, reads.refusal(refused)
         return None, None
     d = reads.acquire(action, "ig", target="swipe")
     if not d.allowed:
@@ -477,6 +481,63 @@ def register(reg) -> None:
                 "foreground is " + (obs.package or "nothing") + ", not " + pkg
                 + ". The app may have failed to start, or a permission dialog "
                 "may be in front.")
+        return out
+
+    @reg.tool(
+        description=(
+            "Report whether this run's account writes and budgeted reads will "
+            "be counted: which account this phone maps to, whether the ledger "
+            "is the local database or the laptop's ledger service, and what is "
+            "left today for the actions that matter. Check this before a "
+            "collection run - a refusal mid-run costs more than a question."
+        )
+    )
+    def ledger_status(actions: list = None) -> dict:
+        from ..policy import ledger_service as ls
+        from ..policy import reads
+        from ..policy import writes as wr
+        o = observer()
+        serial = o.serial or dev.default_serial() or ""
+        out: dict = {"serial": serial,
+                     "source": "service" if ls.configured_url() else "local database",
+                     "uncounted_reads_allowed": reads.uncounted_allowed()}
+        if ls.configured_url():
+            out["service"] = ls.available()
+        asked = [str(a) for a in (actions or [])]
+        # What each platform actually spends. x_* and tg_search have no BUDGET
+        # entry, so they run on the ledger's DEFAULT until Arnav sets ceilings.
+        per_platform = {
+            "ig": ["profile_open", "grid_scan", "reel_open", "reel_walk", "feed_reel",
+                   "sheet_open", "comment_read", "search", "follow", "not_interested"],
+            "x": ["x_scroll", "x_search", "x_consume", "x_sheet_open", "follow",
+                  "not_interested"],
+            "tg": ["tg_read", "tg_search", "tg_join"],
+            "li": ["li_search", "li_scroll", "li_profile_open"],
+        }
+        for platform in ("ig", "x", "tg", "li"):
+            want = asked or per_platform[platform]
+            account = wr.account_for(serial, platform)
+            if not account:
+                continue
+            row: dict = {"account": account}
+            try:
+                led = wr.ledger_for(account, serial)
+            except wr.LedgerUnavailable as e:
+                row["error"] = str(e)[:160]
+                out[platform] = row
+                continue
+            for action in want:
+                try:
+                    b = led.budget(action)
+                    ok, why = led.can(action, 1)
+                    row[action] = {"ok": bool(ok), "per_min": b["per_min"], "why": why}
+                except Exception as e:                       # one bad action, not the lot
+                    row[action] = {"error": type(e).__name__ + ": " + str(e)[:80]}
+            out[platform] = row
+        if not any(k in out for k in ("ig", "x", "tg", "li")):
+            out["hint"] = ("this phone is in no account map, so writes and counted "
+                           "reads are refused; set CLAUDEPHONE_ACCOUNT_MAP, or run "
+                           "with --allow-uncounted-reads for reads only")
         return out
 
     @reg.tool(

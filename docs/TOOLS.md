@@ -27,6 +27,7 @@ Loaded by default. Enough to orient on any screen and find more tools.
 | Tool | Arguments | Description |
 |---|---|---|
 | `bridge_enable` ! | `()` | Enable the on-device accessibility bridge so screen reads become ~24x faster and can be event-driven |
+| `ledger_status` | `(actions?)` | Whether this run's writes and budgeted reads will be counted: the account each platform maps to, local database or laptop service, and what is left today |
 | `bridge_status` | `()` | Report which screen-reading backend is active and whether the on-device accessibility bridge is available |
 | `device_info` | `()` | Model, Android version, screen size, density, battery |
 | `devices` | `()` | List connected devices and their state |

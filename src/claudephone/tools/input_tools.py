@@ -190,6 +190,10 @@ def register(mcp) -> None:
                 gate = reads.acquire(action, "ig", target="swipe")
                 if not gate.allowed:
                     return reads.refusal(gate)
+            elif pkg == "com.twitter.android":
+                refused = reads.bucketed("x_scroll", "x", target="swipe")
+                if refused is not None:
+                    return reads.refusal(refused)
         dev.shell(f"input swipe {x1} {y1} {x2} {y2} {int(duration_ms)}")
         out = {"swiped": {"from": [x1, y1], "to": [x2, y2],
                           "duration_ms": duration_ms}}

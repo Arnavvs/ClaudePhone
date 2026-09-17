@@ -43,6 +43,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from . import ledger_service
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 _RULES: Optional[dict] = None
 
@@ -222,8 +224,9 @@ def account_for(serial: str, platform: str) -> Optional[str]:
 
 # ------------------------------------------------------------------ ledger
 
-class LedgerUnavailable(RuntimeError):
-    pass
+# Defined in ledger_service so a remote ledger that stops answering mid-run
+# raises the same exception as a missing local one, and both fail closed.
+LedgerUnavailable = ledger_service.LedgerUnavailable
 
 
 def _ledger_module():
@@ -251,9 +254,27 @@ def _open(account: str, device: str):
     store.connect() runs the schema and migrations on every call; a feed loop
     asking once per reel should not pay that each time. Keyed on the database
     path too, so a test that points store.DB elsewhere gets its own connection.
+
+    With CLAUDEPHONE_LEDGER_URL set - on the phone, where there is no
+    collect.db - this is the laptop's ledger service instead (B2c). The object
+    answers the same four calls, so nothing downstream changes, and the laptop
+    stays the only thing that reads ceilings or writes rows.
     """
-    lg, store = _ledger_module()
     run = ("claudephone:" + CONFIG.run_id) if CONFIG.run_id else "claudephone"
+    url = ledger_service.configured_url()
+    if url:
+        key = (url, account, device)
+        led = _LEDGERS.get(key)
+        if led is None:
+            led = ledger_service.RemoteLedger(url, account, device=device, run_id=run)
+            h = ledger_service.available(url)
+            if not h.get("ok"):
+                raise LedgerUnavailable("ledger service at " + url + " not answering: "
+                                        + str(h.get("why", ""))[:120])
+            _LEDGERS[key] = led
+        led.run_id = run
+        return led
+    lg, store = _ledger_module()
     key = (getattr(store, "DB", ""), account, device)
     led = _LEDGERS.get(key)
     if led is None:

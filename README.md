@@ -207,6 +207,11 @@ not for transport latency. Details: **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**
   per-minute ceiling. With no ledger reachable (on the phone itself) they are
   refused unless you pass `--allow-uncounted-reads`. Typing into a comment or
   message box is refused. See `policy/reads.py`.
+- **Running the agent on the phone?** There is no `collect.db` in Termux, so
+  serve the ledger from the laptop and point the phone at it:
+  `python -m claudephone.policy.ledger_service --serial <serial>`, then set
+  `CLAUDEPHONE_LEDGER_URL` / `CLAUDEPHONE_LEDGER_TOKEN` in Termux. `ledger_status`
+  says whether a run will be counted before you start it.
 - Automated collection generally breaches the terms of the platforms in the app
   packs. Wrapping it in an agent changes the convenience, not the permission.
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from ... import device as dev
 from ...feed import x as xf
+from ...policy import reads
 from ...policy import writes as wr
 
 
@@ -36,6 +37,18 @@ def _gated(action: str, rule: str, apply: bool, run):
         warn = wr.commit(decision, target=rule, serial=serial)
         if warn:
             r["write_warning"] = warn
+    return r
+
+
+def _counted(action: str, target: str, run):
+    """Run an X READ through the ledger (B2b). One row per call."""
+    d = reads.acquire(action, "x", target=target)
+    if not d.allowed:
+        return reads.refusal(d)
+    r = run()
+    reads.commit(d, target=target)
+    if isinstance(r, dict):
+        r["read"] = d.to_dict()
     return r
 
 
@@ -76,9 +89,11 @@ def register(mcp) -> None:
         )
     )
     def x_feed_post_options(nth: int = 0) -> dict:
-        r = xf.post_options(nth)
-        xf.close_sheet()
-        return r
+        def go():
+            r = xf.post_options(nth)
+            xf.close_sheet()
+            return r
+        return _counted("x_sheet_open", "post %d" % nth, go)
 
     @mcp.tool(
         description=(
@@ -120,7 +135,7 @@ def register(mcp) -> None:
         )
     )
     def x_feed_search_topics(query: str) -> dict:
-        return xf.search_timelines(query)
+        return _counted("x_search", query[:60], lambda: xf.search_timelines(query))
 
     @mcp.tool(
         description=(
@@ -142,9 +157,11 @@ def register(mcp) -> None:
         )
     )
     def x_feed_snapshot(max_tweets: int = 40, max_swipes: int = 20) -> dict:
-        r = xf.snapshot(max_tweets, max_swipes)
-        r.pop("tweets", None)
-        return r
+        def go():
+            r = xf.snapshot(max_tweets, max_swipes)
+            r.pop("tweets", None)
+            return r
+        return _counted("x_scroll", "snapshot %d posts" % max_tweets, go)
 
     @mcp.tool(
         description=(
@@ -165,7 +182,7 @@ def register(mcp) -> None:
         )
     )
     def x_feed_search(query: str, tab: str = "") -> dict:
-        return xf.search(query, tab=tab)
+        return _counted("x_search", query[:60], lambda: xf.search(query, tab=tab))
 
     @mcp.tool(
         description=(
@@ -203,6 +220,10 @@ def register(mcp) -> None:
     )
     def x_feed_consume(duration_s: float = 120.0, dwell_min: float = 1.5,
                        dwell_max: float = 6.0, apply: bool = False) -> dict:
-        r = xf.consume(duration_s, dwell_min, dwell_max, apply=apply)
-        r.pop("tweets", None)
-        return r
+        def go():
+            r = xf.consume(duration_s, dwell_min, dwell_max, apply=apply)
+            r.pop("tweets", None)
+            return r
+        if not apply:                       # planning only, nothing is read
+            return go()
+        return _counted("x_consume", "%.0fs dwell" % duration_s, go)

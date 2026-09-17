@@ -398,12 +398,51 @@ Typing is also judged by target: `text_input` and Enter are refused while a
 comment / DM / reply box is on screen (`composers` in `writes.json`: resource
 ids plus a hint pattern), rule id `any.composer`.
 
-Not counted, because the ledger has no action for them: Telegram search, X and
-LinkedIn reads (their feed tools have their own paths), and swipes on
-non-Instagram screens. datacollect's phases call MobileAgentMCP, not these tools,
+X and Telegram reads count too, under names datacollect's `BUDGET` has no entry
+for: `x_search`, `x_scroll` (one timeline read), `x_consume` (one dwell session),
+`x_sheet_open` and `tg_search`. `budget_for` falls back to `DEFAULT` (4/min,
+60/hour, 300/day) for an unknown action and still applies `ACCOUNT_SCALE`, so
+they are bounded without editing the ceiling table - giving them explicit
+ceilings is Arnav's call. Generic swipes in X count in **batches of ten**
+(`reads.bucketed`), which bounds a runaway loop at 40 swipes a minute without
+pacing a dwell-based read down to one swipe every 15 s.
+
+`ledger_status` reports, per platform, which account this phone maps to, whether
+the ledger is local or the service, and what is left for each action today.
+
+Still not counted: LinkedIn (ClaudePhone has no LinkedIn tools; that leg lives in
+datacollect), and swipes on other apps' screens. datacollect's phases call MobileAgentMCP, not these tools,
 so nothing is counted twice. Verified live on the Samsung (IG 446): 10 counted
 reads, 10 ledger rows, typing and Enter refused in the comment sheet, and an
 author tap with no ledger refused with zero dispatches.
+
+### The ledger, reachable from the phone (B2c)
+
+The gate needs `datacollect/collect.db`, which is on the laptop, not in Termux,
+so an agent running ON the phone had every budgeted write and counted read
+refused. `policy/ledger_service.py` closes that: the laptop serves the ledger on
+loopback and the phone reaches it through `adb reverse` - the mirror of the
+bridge's `adb forward`.
+
+```bash
+python -m claudephone.policy.ledger_service --serial RZ8N70HYQSB   # laptop
+export CLAUDEPHONE_LEDGER_URL=http://127.0.0.1:8770                # phone
+export CLAUDEPHONE_LEDGER_TOKEN=...                                # printed above
+```
+
+`RemoteLedger` answers the same four calls as datacollect's `Ledger` - `budget`,
+`can`, `count`, `record` - so `writes.py` and `reads.py` cannot tell which one
+they hold, and nothing changes when the URL is unset. **The laptop stays the only
+thing that reads a ceiling or writes a row:** the phone sends an account, an
+action and a count, and the service answers from `budget_for`, scaling included.
+A service that stops answering raises the same `LedgerUnavailable` as a missing
+database, so it fails closed. Auth mirrors the bridge: a token in
+`~/.claudephone/ledger_token` (0600), constant-time compared, required on
+everything but `/health`; the socket binds `127.0.0.1` only.
+
+Verified from the Samsung over `adb reverse`: `/health` 200 without a token,
+`/budget` 401 without it and 200 with it, and @saravbhaita's ceilings came back
+scaled to 25% with the review note attached.
 
 The HTTP server binds `127.0.0.1` by default. Exposing it on the LAN requires
 an explicit `--host` and then **mandates** a bearer token, generated on first

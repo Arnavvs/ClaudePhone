@@ -14,6 +14,16 @@ Same ledger, same actions, same semantics as the phases:
     feed_reel     one per reel in a feed   search        one per query
     tg_read       one per Telegram chat opened
 
+Actions datacollect's BUDGET has no entry for - Telegram search and the X feed
+reads - are counted under their own names anyway. `budget_for` falls back to
+DEFAULT (4/min, 60/hour, 300/day) and still applies ACCOUNT_SCALE, so they are
+bounded without editing the ceiling table; giving them explicit ceilings is
+Arnav's call:
+
+    tg_search   one per query            x_search    one per query
+    x_scroll    one timeline read        x_consume   one dwell session
+    x_sheet_open  one post-options menu
+
 Usage, for a tool that performs N units:
 
     d = reads.acquire("profile_open", "ig", target=handle)   # hour/day check, paces the minute
@@ -205,6 +215,30 @@ def reel_advance_action(elements, package: str) -> str:
     if not any(m in rids for m in _REEL_MARKERS):
         return ""
     return "reel_open"
+
+
+# Generic swipes are counted in BATCHES: one ledger row per BUCKET swipes, so a
+# runaway loop is still bounded (4 x_scroll/min = 40 swipes/min) without pacing a
+# dwell-based read down to one swipe every 15 s. Per process, by design - it is a
+# rate limiter, not an audit trail.
+BUCKET = 10
+_BUCKETS: dict = {}
+
+
+def bucketed(action: str, platform: str, target: str = "", serial: Optional[str] = None,
+             per: int = BUCKET) -> Optional[ReadDecision]:
+    """Count one unit per `per` calls. -> a refused decision to stop on, else None."""
+    key = (action, platform, serial or "")
+    n = _BUCKETS.get(key, 0)
+    _BUCKETS[key] = n + 1
+    if n % per:
+        return None
+    d = acquire(action, platform, target=target, serial=serial)
+    if not d.allowed:
+        _BUCKETS[key] = n                      # refused: do not consume the slot
+        return d
+    commit(d, target=target, serial=serial)
+    return None
 
 
 def platform_of(package: str) -> str:
