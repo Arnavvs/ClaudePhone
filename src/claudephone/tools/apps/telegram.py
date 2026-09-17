@@ -336,7 +336,10 @@ def _read():
     """
     from ...runtime import bridge as br
     if br.available():
-        els = br.bridge().tree()["elements"]
+        # MAX_LABEL, not the server's 300-character default: a channel post is
+        # the payload here, and truncating it loses the message rather than a
+        # button's label.
+        els = br.bridge().tree(max_text=MAX_LABEL)["elements"]
     else:
         els = uix.parse(dev.u2().dump_hierarchy(), max_text=MAX_LABEL)
     tg = [e for e in els if not e.pkg or e.pkg == TG_PKG]

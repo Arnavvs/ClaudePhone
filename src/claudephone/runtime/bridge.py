@@ -316,18 +316,23 @@ class Bridge:
 
     # -- reading -------------------------------------------------------------
 
-    def tree(self, limit: int = 300, all_windows: bool = False) -> dict:
+    def tree(self, limit: int = 300, all_windows: bool = False,
+             max_text: int = 0) -> dict:
         """The active window's elements, plus what else is on screen (v0.2).
 
         `obstructions` lists windows above the app that are not status or
         navigation bars - a keyboard, a system alert, a chat head. When it is
         non-empty, a tap aimed at the app may land on one of them.
+        `max_text` raises the server's per-label cap (default 300 characters),
+        which a chat message needs and a button label does not. A v0.2 build
+        without the cap parameter ignores it and still truncates at 300.
         `all_windows=True` appends those windows' elements, tagged `window`.
         On a v0.1 bridge the extra keys are simply absent.
         """
         t0 = time.time()
         r = self._get("/tree?limit=" + str(limit)
-                      + ("&windows=all" if all_windows else ""))
+                      + ("&windows=all" if all_windows else "")
+                      + ("&tmax=" + str(int(max_text)) if max_text else ""))
         return {
             "elements": _elements_from(r.get("elements") or []),
             "package": r.get("package") or "",

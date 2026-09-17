@@ -264,12 +264,17 @@ class BridgeServer extends Thread {
                 AccessibilityNodeInfo root = svc.root();
                 JSONArray els = new JSONArray();
                 int limit = intArg(q, "limit", 300);
+                // Per-request text cap. 300 suits a control label; a Telegram
+                // message needs far more, and the u2 path allowed 4000, so a
+                // fixed 300 here silently truncated long channel posts once the
+                // bridge became the default backend.
+                int tmax = Math.max(16, Math.min(intArg(q, "tmax", 300), 8000));
                 boolean keepAll = q.containsKey("all");
                 // Elements of the ACTIVE window come first and are numbered exactly
                 // as in v0.1, so every index-based consumer keeps working.
                 Map<Integer, String> pkgs = new HashMap<>();
                 if (root != null) {
-                    walk(root, "", els, limit, keepAll, null);
+                    walk(root, "", els, limit, keepAll, null, tmax);
                     String rootPkg = String.valueOf(root.getPackageName());
                     r.put("package", rootPkg);
                     // We already know the active window's package; do not ask again.
@@ -290,7 +295,7 @@ class BridgeServer extends Thread {
                         JSONObject tag = new JSONObject()
                                 .put("w", BridgeService.windowType(type))
                                 .put("wid", w.getId());
-                        walk(wr, "", els, limit, keepAll, tag);
+                        walk(wr, "", els, limit, keepAll, tag, tmax);
                     }
                 }
                 r.put("elements", els);
@@ -446,7 +451,8 @@ class BridgeServer extends Thread {
      * `tag`, when set, is merged into every element (window type and id).
      */
     private void walk(AccessibilityNodeInfo n, String anchor, JSONArray out,
-                      int limit, boolean keepAll, JSONObject tag) throws Exception {
+                      int limit, boolean keepAll, JSONObject tag, int tmax)
+            throws Exception {
         if (n == null || out.length() >= limit) return;
 
         String rid = n.getViewIdResourceName();
@@ -472,10 +478,10 @@ class BridgeServer extends Thread {
             e.put("i", out.length());
             if (!shortRid.isEmpty()) e.put("id", shortRid);
             if (!anchor.isEmpty() && !anchor.equals(shortRid)) e.put("anchor", anchor);
-            if (!text.isEmpty()) e.put("text", text.length() > 300
-                    ? text.substring(0, 300) : text);
+            if (!text.isEmpty()) e.put("text", text.length() > tmax
+                    ? text.substring(0, tmax) : text);
             if (!desc.isEmpty() && !desc.equals(text)) e.put("desc",
-                    desc.length() > 300 ? desc.substring(0, 300) : desc);
+                    desc.length() > tmax ? desc.substring(0, tmax) : desc);
             if (!shortCls.isEmpty()) e.put("cls", shortCls);
             e.put("c", new JSONArray().put(b.centerX()).put(b.centerY()));
             // Full bounds too: the Python side builds real ui.Element
@@ -499,7 +505,7 @@ class BridgeServer extends Thread {
 
         int kids = n.getChildCount();
         for (int i = 0; i < kids; i++) {
-            walk(n.getChild(i), childAnchor, out, limit, keepAll, tag);
+            walk(n.getChild(i), childAnchor, out, limit, keepAll, tag, tmax);
         }
     }
 }

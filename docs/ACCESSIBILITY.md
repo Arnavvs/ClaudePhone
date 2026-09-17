@@ -332,6 +332,14 @@ Measured on Instagram, same screens, bridge vs u2 forced:
 The only field that differed was the caption, where u2's XML flattens emoji and
 the bridge does not.
 
+**Bridge v0.2.1** adds a per-request text cap, `/tree?tmax=N` (default 300,
+clamped to 16..8000). 300 characters is right for a button label and wrong for a
+chat message: Telegram's u2 path allowed 4000, so once the bridge became the
+default a long channel post read short. `tg_read` now asks for `MAX_LABEL`.
+Older builds ignore the parameter and still truncate at 300 - `/health` reports
+the version. Verified on the Samsung: `tmax=16` and `tmax=40` truncate to
+exactly that, the default and 4000 return the full 91-character label.
+
 Two differences to know about:
 
 - **Element counts.** A u2 dump contains the status and navigation bars, since

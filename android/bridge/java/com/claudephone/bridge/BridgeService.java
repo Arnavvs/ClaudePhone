@@ -43,7 +43,7 @@ public class BridgeService extends AccessibilityService {
     public static final String TAG = "ClaudePhoneBridge";
     public static final int PORT = 8766;
     /** Reported by /health so a client can tell a hardened build from v0.1. */
-    public static final String VERSION = "0.2";
+    public static final String VERSION = "0.2.1";   // 0.2.1: per-request text cap (tmax)
 
     /** Bumped on every content change; /changed long-polls against it. */
     public static final AtomicInteger CHANGES = new AtomicInteger(0);
