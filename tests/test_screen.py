@@ -143,3 +143,17 @@ def test_denoise_keeps_anything_with_a_value_or_a_touch_target():
 def test_parse_and_bridge_shape_the_same_element_type(on_bridge, on_u2):
     assert isinstance(uix.parse(XML)[0], Element)
     assert isinstance(scr.context()["elements"][0], Element)
+
+
+def test_a_filtered_read_is_renumbered_so_its_refs_resolve(on_bridge):
+    """Found live: ui_dump showed i=55 on a 34-element screen, because the
+    denoised list kept indices from the full tree; tap(ref) resolves by position."""
+    from claudephone import state
+    from claudephone.runtime import targeting as tg
+    for n, e in enumerate(APP + BARS):
+        e.i = 50 + n                                 # indices from a bigger tree
+    c = scr.context()
+    assert [e.i for e in c["elements"]] == list(range(len(c["elements"])))
+    last = c["elements"][-1]
+    found, err = tg.from_cache(last.i, state.ref(last.i))
+    assert err is None and found is last

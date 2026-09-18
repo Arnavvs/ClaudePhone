@@ -78,8 +78,23 @@ def fingerprint(elements) -> str:
 
 
 def remember(elements, pkg: str = "") -> str:
-    """Cache a screen read. Returns its version (new only if the screen changed)."""
+    """Cache a screen read. Returns its version (new only if the screen changed).
+
+    Every element's `i` is made equal to its position here. A ref resolves by
+    position (`elements[i]`), but callers often filter a read before caching it -
+    the bridge path drops layout noise and other windows - and the elements keep
+    the index they had in the full tree. Found by the first live model run: the
+    decider was shown `i=55` on a 34-element screen, tapped ref "5_55" with the
+    right version, and got "index 55 out of range". Renumbering here fixes every
+    filtering caller at once, including ones not written yet.
+    """
     global _seq
+    for n, e in enumerate(elements or []):
+        if getattr(e, "i", n) != n:
+            try:
+                e.i = n
+            except (AttributeError, TypeError):
+                pass
     fp = fingerprint(elements)
     if fp != last.get("fp") or not last.get("ver"):
         _seq += 1
@@ -98,6 +113,22 @@ def version() -> str:
 
 def ref(i: int) -> str:
     return "%s_%d" % (version(), i)
+
+
+def with_refs(compact: list) -> list:
+    """Stamp each compacted element with a ready-to-use ref for the CURRENT read.
+
+    Every tool that hands back elements must hand back refs that tap() accepts.
+    Leaving the model to assemble "<ver>_<i>" failed live: scroll_to returned
+    elements with no version, the decider reused one from an earlier read, and
+    the tap was refused as VERSION_MISMATCH. Call right after the read is
+    remembered, so the version belongs to these elements.
+    """
+    v = version()
+    for d in compact:
+        if isinstance(d, dict) and "i" in d:
+            d["ref"] = "%s_%d" % (v, d["i"])
+    return compact
 
 
 def parse_ref(r: str) -> Optional[tuple[str, int]]:

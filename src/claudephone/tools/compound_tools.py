@@ -442,8 +442,8 @@ def register(reg) -> None:
                              + " " + (e.rid or "")).lower()]
             if hits:
                 return {"found": True, "after_swipes": n,
-                        "matches": len(hits),
-                        "elements": uix.compact(hits, limit=8)}
+                        "matches": len(hits), "ver": state.version(),
+                        "elements": state.with_refs(uix.compact(hits, limit=8))}
             if n == max_swipes:
                 break
             gate, refused = _swipe_gate(o, direction)
@@ -474,7 +474,8 @@ def register(reg) -> None:
         ok = obs.package == pkg
         out = {"launched": pkg, "foreground": obs.package, "arrived": ok,
                "waited_s": waited, "total_elements": len(obs.elements),
-               "elements": obs.compact(limit=limit)}
+               "ver": state.version(),
+               "elements": state.with_refs(obs.compact(limit=limit))}
         if not ok:
             blocked = o.explain_empty(obs)
             out["blocked_by"] = blocked or (

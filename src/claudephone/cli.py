@@ -359,6 +359,42 @@ def cmd_runs(a) -> int:
     return 0
 
 
+def cmd_ab(a) -> int:
+    """Run one goal against several deciders and compare (B5)."""
+    from .harness import ab
+    from .harness.loop import Budget
+    from .harness.models import ModelConfig, key_status
+
+    models = [m.strip() for m in a.models.split(",") if m.strip()]
+    if len(models) < 1:
+        print(c("give --models a,b", RED))
+        return 2
+    budget = Budget(max_steps=a.max_steps, max_seconds=a.max_seconds,
+                    max_usd=a.max_usd, free_reserve=a.free_reserve)
+
+    def reset():
+        # Same starting screen for every decider: home, then settle.
+        dev.shell("input keyevent KEYCODE_HOME")
+        time.sleep(1.5)
+
+    def quota():
+        st = key_status(ModelConfig.from_env(a.provider))
+        return st.get("free_remaining") if st.get("ok") else None
+
+    goal = " ".join(a.goal)
+    print(c("A/B: " + goal, BOLD))
+    rows = ab.run_ab(goal, models, budget, expect=a.expect, notes=a.notes or "",
+                     provider=a.provider, reset=reset, quota=quota)
+    print(ab.table(rows))
+    for r in rows:
+        if r.get("answer") or r.get("error"):
+            print(c(chr(10) + r["model"] + ":", BOLD), (r.get("answer") or r.get("error"))[:300])
+    from . import state
+    path = ab.save(rows, goal, a.expect, os.path.join(state.ARTIFACT_DIR, "ab"))
+    print(c(chr(10) + "saved " + path, DIM))
+    return 0
+
+
 def cmd_mcp(a) -> int:
     """Serve the same tools over MCP stdio, for a laptop Claude Code session."""
     from .mcp_server import main as mcp_main
@@ -443,6 +479,20 @@ def build_parser() -> argparse.ArgumentParser:
     n.add_argument("--json", action="store_true",
                    help="with a run_id, dump its raw events")
     n.set_defaults(fn=cmd_runs)
+
+    b = sub.add_parser("ab", help="compare decider models on one goal (B5)")
+    b.add_argument("goal", nargs="+")
+    b.add_argument("--models", required=True,
+                   help="comma-separated decider models, run in this order")
+    b.add_argument("--expect", default="",
+                   help="regex the answer must contain to count as correct")
+    b.add_argument("--provider", default="")
+    b.add_argument("--notes", default="")
+    b.add_argument("--max-steps", type=int, default=8, dest="max_steps")
+    b.add_argument("--max-seconds", type=float, default=300.0, dest="max_seconds")
+    b.add_argument("--max-usd", type=float, default=0.10, dest="max_usd")
+    b.add_argument("--free-reserve", type=int, default=2, dest="free_reserve")
+    b.set_defaults(fn=cmd_ab)
 
     m = sub.add_parser("mcp", help="serve tools over MCP stdio")
     m.set_defaults(fn=cmd_mcp)

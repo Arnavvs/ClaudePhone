@@ -32,6 +32,8 @@ again - never retry the same ref. Coordinates are a last resort.
 - **Never sleep blindly.** Use `wait_for(query=...)` after anything that loads. \
 A fixed sleep is either too short (you act on the old screen) or wasted time.
 - **`up` advances a feed.** swipe(direction="up") moves to the next reel/post.
+- **Not on screen is not absent.** `ui_dump(query=...)` filters what is visible right now; it does not search the app. Settings lists, profiles and menus run below the fold - use `scroll_to(query=...)`, or swipe up and read again.
+- **Answer as soon as you know.** If a tool has already told you the answer (`device_info` reports the Android version, for example), say it - confirming it on another screen is optional, and a run that ends on its step limit with the answer unsaid has failed.
 - **Verify, do not assume.** After `launch_app`, check `foreground_app`. Apps \
 resume onto whatever screen they were last on, not their home screen.
 - **A missing field is a fact.** If extraction returns null, report the gap. Do \

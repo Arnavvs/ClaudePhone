@@ -93,6 +93,54 @@ actually happened from the tool-call record. It is deliberately the cheapest
 useful thing a second model can do - one request, after the decider is done -
 and the side of the split the ablation says a small model can hold.
 
+### Comparing deciders: `claudephone ab`
+
+```bash
+claudephone ab --models deepseek/deepseek-v4-flash-0731:free,liquid/lfm-2.5-2.6b:free \
+               --expect '\b12\b' --max-steps 12 "What Android version is this phone running?"
+```
+
+Runs the goal against each decider in turn, sends the phone home between runs,
+grades the answer against `--expect`, and skips a run the day's free quota could
+not finish. Results go to `artifacts/ab/`.
+
+### What the first live runs showed (2026-09-18, Samsung, free tier)
+
+| run | wording | DeepSeek V4 Flash | LFM 2.5 2.6B |
+|---|---|---|---|
+| 1 | "…find it in the Settings app", 8 steps | max_steps, no answer | max_steps, no answer |
+| 2 | same, 12 steps, after fixes a–c | max_steps, no answer | **correct, 2 steps** |
+| 3 | same, 12 steps, DeepSeek decider + LFM helper | max_steps, no answer | (helper summary: accurate) |
+| 4 | "What Android version is this phone running?", 4 steps | **correct, 1 step** | **correct, 1 step** |
+
+**Most failures were the harness, not the model.** The runs exposed, in order:
+
+- a. A decider took `ui_dump(query=...)` for a search of the whole app. It is a
+  filter on the visible screen. It now says so when it finds nothing.
+- b. Reading the same frozen screen with alternating arguments slipped past
+  stagnation. A screen unchanged for 4 steps now warns - and the step after
+  that warning, DeepSeek finally scrolled and found "About phone".
+- c. A 2.6B decider had the answer from `device_info` at step 1, then obeyed
+  "find it in Settings" until its steps ran out, answer unsaid. The prompt now
+  says to answer as soon as it knows, and a cut-off run reports its last words.
+- d. `scroll_to` returned elements with no version, so the ref DeepSeek built
+  from an older read was refused (VERSION_MISMATCH). Every element-returning
+  tool now stamps a ready-made `ref`.
+- e. The bridge path filters a read before caching it, and the elements kept
+  their indices from the full tree: `ui_dump` showed `i=55` on a 34-element
+  screen. `state.remember` now renumbers. Verified by replaying the exact
+  sequence with real tools and no model: every tap landed.
+
+**What it does not show yet** is the ablation's claim that cheap deciders
+collapse. Run 4 says both models answer correctly when the question allows the
+shortcut, and runs 1–3 mostly measured instruction-literalism and the bugs
+above. One trial per cell; the next comparison needs a task with no shortcut,
+run on the fixed harness, several times each.
+
+**The free-quota counter lags.** `GET /key` caught up with the requests over a
+few minutes, while the local count was exact from the first request - so the
+loop's `free_quota` stop trusts its own count, not the server's.
+
 ---
 
 ## Local, on the phone

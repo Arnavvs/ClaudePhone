@@ -338,6 +338,7 @@ class Agent:
 
         steps = 0
         stag = self.stagnation
+        last_thought = ""
         while True:
             tokens = self.chat.total_usage.get("total_tokens", 0)
             stop = self.budget.exceeded(steps, started, tokens,
@@ -345,7 +346,12 @@ class Agent:
                                         free_left=self.free_left())
             if stop:
                 yield {"type": "budget", "stopped_by": stop, "steps": steps}
+                # The run was cut off, not finished: there is no answer, but the
+                # model's last words often hold what it had found. Measured
+                # live: a 2.6B decider stated the right answer at step 1 and was
+                # graded empty-handed at step 8.
                 yield {"type": "final", "content": "",
+                       "last_thought": last_thought[:600],
                        "stopped_by": stop, "steps": steps,
                        "seconds": round(time.time() - started, 1),
                        "usage": dict(self.chat.total_usage)}
@@ -374,6 +380,8 @@ class Agent:
                 continue
 
             if reply.content:
+                if reply.content.strip():
+                    last_thought = reply.content.strip()
                 yield {"type": "thought", "content": reply.content,
                        "ms": reply.ms}
 

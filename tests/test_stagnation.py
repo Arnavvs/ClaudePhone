@@ -174,3 +174,25 @@ def test_disabling_the_stop_lets_the_budget_end_it_instead():
                   stagnation=Stagnation(stop_after=0))
     final = [e for e in agent.run("tap") if e["type"] == "final"][-1]
     assert final["stopped_by"].startswith("max_steps")
+
+
+def test_alternating_reads_on_a_frozen_screen_are_caught():
+    """Measured live: ui_dump {} / ui_dump {"query": "About"} / ui_dump {} ...
+    Different arguments every time, so no single call ever repeated."""
+    stag = Stagnation()
+    calls = [("ui_dump", {}, "settings"), ("ui_dump", {"query": "About"}, "settings")] * 3
+    adv = run(stag, calls)
+    idle = [a for a in adv if a and a["reason"] == "idle_screen"]
+    assert len(idle) == 1 and not idle[0]["stop"]
+    assert "scroll_to" in idle[0]["message"]
+
+
+def test_a_budget_stop_reports_the_models_last_words():
+    agent_replies = [Reply(content="The device reports Android 12. Let me also check Settings.",
+                           tool_calls=[{"id": "c1", "name": "tap", "args": {"ref": str(i)}}])
+                     for i in range(5)]
+    agent = Agent(FakeChat(lambda n: agent_replies[min(n - 1, 4)]), stuck_registry(),
+                  budget=Budget(max_steps=2), stagnation=Stagnation(stop_after=0))
+    final = [e for e in agent.run("android version?") if e["type"] == "final"][-1]
+    assert final["stopped_by"].startswith("max_steps")
+    assert final["content"] == "" and "Android 12" in final["last_thought"]

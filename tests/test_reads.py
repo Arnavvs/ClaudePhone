@@ -314,3 +314,46 @@ def test_run_config_carries_uncounted_reads():
     assert build_policy().allow_uncounted_reads is False
     src = open(cli.__file__, encoding="utf-8").read()
     assert "--allow-uncounted-reads" in src
+
+
+# -- every tool that returns elements returns tappable refs (found live, B5 run) ----
+
+def test_with_refs_stamps_refs_tap_will_accept():
+    screen = [el("title", text="About phone", bounds=(0, 1800, 600, 1900))]
+    state.remember(screen, "com.android.settings")
+    out = state.with_refs([{"i": 0, "t": "About phone"}])
+    assert out[0]["ref"] == state.ref(0)
+    ver, i = state.parse_ref(out[0]["ref"])
+    assert ver == state.version() and i == 0
+
+
+def test_wait_for_returns_refs_for_the_read_it_made(monkeypatch):
+    about = el("title", text="About phone", bounds=(0, 1800, 600, 1900))
+    _env(monkeypatch, [about], pkg="com.android.settings")
+    r = _registry().call("wait_for", {"query": "About phone", "timeout_s": 1})
+    assert r["found"] and r["ver"] == state.version()
+    assert r["elements"][0]["ref"] == state.ref(r["elements"][0]["i"])
+
+
+def test_scroll_until_counts_reels_it_swipes_through(monkeypatch, temp_ledger):
+    reel = [el("clips_author_username", text="a"), el("clips_tab", selected=True)]
+    _, shell = _env(monkeypatch, reel)
+    monkeypatch.setattr(dev, "device_info", lambda: type("I", (), {"screen": "1080x2340"})())
+    r = _registry().call("scroll_until", {"query": "never there", "max_swipes": 2,
+                                          "settle_s": 0})
+    assert r["found"] is False
+    assert len([c for c in shell if "input swipe" in c]) == 2
+    assert len(rows(temp_ledger, "feed_reel")) == 2        # one per swipe, not zero
+
+
+def test_scroll_until_is_refused_before_swiping_when_there_is_no_ledger(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDEPHONE_DATACOLLECT", str(tmp_path))
+    monkeypatch.setenv("CLAUDEPHONE_ACCOUNT_MAP", json.dumps(
+        {SAMSUNG: {"alias": "samsung", "account": "aisha_xmehra", "model": "SM-M215F"}}))
+    reel = [el("clips_author_username", text="a"), el("clips_tab", selected=True)]
+    _, shell = _env(monkeypatch, reel)
+    monkeypatch.setattr(dev, "device_info", lambda: type("I", (), {"screen": "1080x2340"})())
+    r = _registry().call("scroll_until", {"query": "never there", "max_swipes": 3,
+                                          "settle_s": 0})
+    assert r["error"] == "ledger refused this read"
+    assert not [c for c in shell if "input swipe" in c]

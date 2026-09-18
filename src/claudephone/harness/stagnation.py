@@ -59,8 +59,13 @@ class Stagnation:
     warn_after: int = 2
     stop_after: int = 3
     revisit_gap: int = 5
+    # Same screen for this many steps in a row, whatever was called. Catches
+    # the loop the per-call rule cannot: ui_dump / ui_dump(query=X) / ui_dump /
+    # ... - different arguments each time, so no single call ever repeats.
+    idle_warn: int = 4
 
     repeats: dict = field(default_factory=dict)      # key -> consecutive no-change count
+    idle: int = 0                                    # consecutive steps, screen unchanged
     seen: dict = field(default_factory=dict)         # screen fingerprint -> first step
     last_key: str = ""
     warned: set = field(default_factory=set)
@@ -89,6 +94,7 @@ class Stagnation:
         # screen is the case this feature exists for; measured live on the
         # Samsung, treating "unknown" as "changed" let 25 identical swipes run to
         # max_steps without a word.
+        self.idle = 0 if changed else self.idle + 1
         if changed:
             self.repeats.pop(key, None)
         elif tool in _READ_ONLY and key != self.last_key:
@@ -120,6 +126,20 @@ class Stagnation:
                     "call it a third time. Read the screen, and either act on a "
                     "different element, back out and re-enter, or report that this "
                     "step cannot be completed."),
+            }
+
+        if self.idle_warn and self.idle >= self.idle_warn and "idle" not in self.warned:
+            self.warned.add("idle")
+            return {
+                "stop": False,
+                "reason": "idle_screen",
+                "tool": tool, "args": args, "attempts": self.idle,
+                "message": (
+                    "The screen has not changed in " + str(self.idle) + " steps. "
+                    "Reading it again will not change that. If what you need is "
+                    "not visible it is probably further down - use "
+                    "scroll_to(query=...) or swipe up - or tap into the section "
+                    "that holds it. If you already have the answer, give it."),
             }
 
         # Circling: this screen was already seen a while ago.

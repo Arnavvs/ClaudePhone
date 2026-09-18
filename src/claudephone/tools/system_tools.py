@@ -290,7 +290,8 @@ def register(mcp) -> None:
             if hits:
                 return {"found": True, "polls": polls,
                         "waited_s": round(time.time() - (deadline - timeout_s), 2),
-                        "elements": uix.compact(hits, limit=10)}
+                        "ver": state.version(),
+                        "elements": state.with_refs(uix.compact(hits, limit=10))}
             time.sleep(poll_s)
         return {"found": False, "polls": polls, "timeout_s": timeout_s,
                 "hint": "check the query, or the screen may not have loaded"}
@@ -304,7 +305,8 @@ def register(mcp) -> None:
     def scroll_until(query: str, direction: str = "up", max_swipes: int = 8,
                      settle_s: float = 0.8) -> dict:
         from .. import ui as uix
-        d = dev.u2()
+        from ..policy import reads
+        from ..runtime import targeting as tg
         info = dev.device_info()
         try:
             w, h = (int(v) for v in info.screen.lower().split("x"))
@@ -317,16 +319,32 @@ def register(mcp) -> None:
         if direction not in moves:
             return {"error": "direction must be up or down"}
         for n in range(max_swipes + 1):
-            els = uix.parse(d.dump_hierarchy())
-            state.remember(els)
+            r = tg.read_screen()                     # bridge first (2e)
+            els, pkg = r["elements"], r.get("package") or ""
+            state.remember(els, pkg)
             hits = uix.find(els, query=query)
             if hits:
-                return {"found": True, "swipes": n,
-                        "elements": uix.compact(hits, limit=8)}
+                return {"found": True, "swipes": n, "ver": state.version(),
+                        "elements": state.with_refs(uix.compact(hits, limit=8))}
             if n == max_swipes:
                 break
+            # A forward swipe through reels is a counted read (B2b); this tool
+            # used raw `input swipe` and so walked straight past the ledger.
+            gate = None
+            if direction == "up":
+                action = reads.reel_advance_action(els, pkg)
+                if action:
+                    gate = reads.acquire(action, "ig", target="scroll_until")
+                    if not gate.allowed:
+                        return {"found": False, "swipes": n, **reads.refusal(gate)}
+                elif pkg == "com.twitter.android":
+                    refused = reads.bucketed("x_scroll", "x", target="scroll_until")
+                    if refused is not None:
+                        return {"found": False, "swipes": n, **reads.refusal(refused)}
             x1, y1, x2, y2 = moves[direction]
             dev.shell(f"input swipe {x1} {y1} {x2} {y2} 300")
+            if gate is not None:
+                reads.commit(gate, target="scroll_until")
             time.sleep(settle_s)
         return {"found": False, "swipes": max_swipes,
                 "hint": "item not reached; raise max_swipes or check the query"}

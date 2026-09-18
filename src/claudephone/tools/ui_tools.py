@@ -69,6 +69,14 @@ def register(mcp) -> None:
         if len(shown) > limit:
             res["truncated"] = (f"{len(shown) - limit} more; narrow with "
                                 f"`query` or raise `limit`")
+        if query and not shown:
+            # Measured live: a decider took `query` for a search of the whole
+            # app, got 0, and asked again with the same query until its budget
+            # ran out, while the item sat one scroll below.
+            res["hint"] = ("no match ON THIS SCREEN - `query` filters what is "
+                           "visible now, it does not search the app. The item "
+                           "may be further down: use scroll_to(query=...), or "
+                           "swipe(direction='up') and read again.")
         return res
 
     @mcp.tool(
