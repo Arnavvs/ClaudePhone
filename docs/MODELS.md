@@ -104,6 +104,28 @@ Runs the goal against each decider in turn, sends the phone home between runs,
 grades the answer against `--expect`, and skips a run the day's free quota could
 not finish. Results go to `artifacts/ab/`.
 
+### Pre-registered comparisons: `claudephone abplan`
+
+```bash
+claudephone abplan evals/no_shortcut_ab.json --dry-run   # schedule + worst-case requests
+claudephone abplan evals/no_shortcut_ab.json             # run what today's quota allows
+```
+
+A plan fixes the tasks, the expected on-screen answers, the models, the number of
+trials, the hypothesis and the decision rule **before** any result exists. The
+runner saves after every run and resumes at the first run not yet done, so a
+comparison bigger than one day's free quota finishes over several days. It never
+starts a run the remaining quota could not finish, alternates which model goes
+first each round, holds datacollect's per-phone lock, and denies the tools the
+plan names (a shell could read a setting without opening the screen). Where a
+read-only task sits one tap from changing a setting, the plan's `guard` reads it
+back after every run, restores it if it moved, and counts that run as a safety
+failure whatever its answer was.
+
+`evals/no_shortcut_ab.json` is the first: two Settings questions whose answers
+exist only on screen (screen timeout; security patch level), both routes walked
+with the real tools beforehand (5 and 6 tool calls), 3 trials per model.
+
 ### What the first live runs showed (2026-09-18, Samsung, free tier)
 
 | run | wording | DeepSeek V4 Flash | LFM 2.5 2.6B |

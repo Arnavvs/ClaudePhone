@@ -395,6 +395,70 @@ def cmd_ab(a) -> int:
     return 0
 
 
+def cmd_abplan(a) -> int:
+    """Run a pre-registered decider comparison, resuming where it stopped."""
+    from .harness import ab
+    from .harness.models import ModelConfig, key_status
+    from . import state
+
+    with open(a.plan, encoding="utf-8") as f:
+        plan = json.load(f)
+    state_path = a.state or os.path.join(state.ARTIFACT_DIR, "ab",
+                                         plan.get("name", "plan") + ".state.json")
+    items = ab.plan_items(plan)
+    if a.dry_run:
+        print(c(plan.get("name", "plan") + ": " + str(len(items)) + " runs", BOLD))
+        worst = sum(int(next(t for t in plan["tasks"] if t["id"] == i["task"])
+                        ["max_steps"]) + 1 for i in items)
+        print("  worst case " + str(worst) + " requests; state -> " + state_path)
+        for i in items:
+            print("  " + i["id"])
+        return 0
+
+    def quota():
+        st = key_status(ModelConfig.from_env(a.provider))
+        return st.get("free_remaining") if st.get("ok") else None
+
+    def reset(cmds):
+        for cmd in cmds:
+            dev.shell(cmd)
+        time.sleep(1.5)
+
+    # Hold datacollect's per-phone lock for the whole plan, so an unattended run
+    # can never interleave with a collection phase on the same handset.
+    lock, guard = None, None
+    try:
+        from .policy import writes as wr
+        sys.path.insert(0, wr._datacollect_dir())
+        import guard                                    # type: ignore
+        serial = dev.default_serial()
+        lock = guard.acquire(serial, "abplan:" + plan.get("name", "plan"))
+        if not lock:
+            print(c("phone " + serial + " is held by " + str(guard.lock_holder(serial)),
+                    RED))
+            return 5
+    except ImportError:
+        guard = None                                   # no datacollect: no lock to take
+    try:
+        st = ab.run_plan(plan, state_path, quota=quota, reset=reset,
+                         provider=a.provider,
+                         shell=lambda cmd: dev.shell(cmd, check=False))
+    finally:
+        if lock and guard is not None:
+            guard.release(lock)
+    done = len(st.get("results", {}))
+    print(c(chr(10) + str(done) + " of " + str(len(items)) + " runs done", BOLD))
+    for r in ab.summarise(plan, st):
+        print("  %-3s %-40s %d/%d correct, median %s steps, ended %s%s" % (
+            r["task"], r["model"][:40], r["correct"], r["runs"],
+            r["median_steps"], json.dumps(r["ended"]),
+            ("  CHANGED A SETTING x%d" % r["changed_a_setting"])
+            if r["changed_a_setting"] else ""))
+    if st.get("stopped"):
+        print(c("  paused for the free quota; run again tomorrow to continue", YELLOW))
+    return 0
+
+
 def cmd_mcp(a) -> int:
     """Serve the same tools over MCP stdio, for a laptop Claude Code session."""
     from .mcp_server import main as mcp_main
@@ -493,6 +557,15 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--max-usd", type=float, default=0.10, dest="max_usd")
     b.add_argument("--free-reserve", type=int, default=2, dest="free_reserve")
     b.set_defaults(fn=cmd_ab)
+
+    pl = sub.add_parser("abplan", help="run a pre-registered decider A/B, "
+                                       "resuming across days (B5)")
+    pl.add_argument("plan", help="plan JSON, e.g. evals/no_shortcut_ab.json")
+    pl.add_argument("--state", default="", help="results file (resumable)")
+    pl.add_argument("--provider", default="")
+    pl.add_argument("--dry-run", action="store_true", dest="dry_run",
+                    help="print the schedule and worst-case request count")
+    pl.set_defaults(fn=cmd_abplan)
 
     m = sub.add_parser("mcp", help="serve tools over MCP stdio")
     m.set_defaults(fn=cmd_mcp)

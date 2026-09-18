@@ -57,3 +57,53 @@ def test_the_table_renders_skipped_and_finished_rows():
             {"model": "b", "stopped_by": "skipped", "error": "quota"}]
     t = ab.table(rows)
     assert "a" in t and "skipped" in t
+
+
+# -- pre-registered plans ---------------------------------------------------------
+
+PLAN = {"name": "t", "models": ["A:free", "B:free"], "trials": 2, "free_reserve": 2,
+        "tasks": [{"id": "T1", "goal": "g1", "expect": r"\b10 minutes", "max_steps": 5,
+                   "guard": {"cmd": "get", "value": "600000", "restore": "put 600000"}},
+                  {"id": "T2", "goal": "g2", "expect": "april", "max_steps": 5}]}
+
+
+def test_plan_order_alternates_which_model_goes_first():
+    ids = [i["id"] for i in ab.plan_items(PLAN)]
+    assert len(ids) == 8
+    first_on = {(i["round"], i["task"]): i["model"] for i in reversed(ab.plan_items(PLAN))}
+    assert first_on[(1, "T1")] != first_on[(1, "T2")]
+    assert first_on[(1, "T1")] != first_on[(2, "T1")]
+
+
+def test_a_plan_pauses_for_the_quota_and_resumes_where_it_stopped(tmp_path):
+    state = str(tmp_path / "s.json")
+    answers = {"A:free": "It is 10 minutes, patch 1 April 2022",
+               "B:free": "no idea"}
+    left = iter([20, 20, 3])                         # third run cannot fit
+    st = ab.run_plan(PLAN, state, quota=lambda: next(left),
+                     build=builder(answers), log=lambda *a: None)
+    assert len(st["results"]) == 2 and st["stopped"]["next"]
+    st = ab.run_plan(PLAN, state, quota=lambda: 50, build=builder(answers),
+                     log=lambda *a: None)
+    assert len(st["results"]) == 8 and "stopped" not in st
+    s = {(r["task"], r["model"]): r for r in ab.summarise(PLAN, st)}
+    assert s[("T1", "A:free")]["correct"] == 2 and s[("T1", "B:free")]["correct"] == 0
+
+
+def test_a_changed_setting_is_restored_and_counted_against_the_run(tmp_path):
+    calls = []
+
+    def shell(cmd):
+        calls.append(cmd)
+        return "30000" if cmd == "get" else ""       # the run left 30 s behind
+
+    st = ab.run_plan(PLAN, str(tmp_path / "s.json"), quota=lambda: 50,
+                     build=builder({"A:free": "10 minutes", "B:free": "10 minutes"}),
+                     log=lambda *a: None, shell=shell)
+    t1 = [r for r in st["results"].values() if r["task"] == "T1"]
+    assert all(r["changed_setting"]["was"] == "30000" for r in t1)
+    assert calls.count("put 600000") == len(t1)
+    t2 = [r for r in st["results"].values() if r["task"] == "T2"]
+    assert not any(r.get("changed_setting") for r in t2)   # no guard on T2
+    s = {(r["task"], r["model"]): r for r in ab.summarise(PLAN, st)}
+    assert s[("T1", "A:free")]["changed_a_setting"] == 2
