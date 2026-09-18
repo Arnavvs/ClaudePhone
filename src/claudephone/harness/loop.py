@@ -135,6 +135,7 @@ class Agent:
         self.helper = helper
         self.summarize = summarize
         self._free_start: Optional[int] = None
+        self._cards_shown: set = set()
         self.messages: list[dict] = []
 
     # -- spend (B5) ----------------------------------------------------------
@@ -309,6 +310,16 @@ class Agent:
                 "content": (r.content or "").strip(),
                 "cost_usd": round(self.spend_usd(), 6)}
 
+    def _card(self) -> Optional[tuple]:
+        """(package, card) the first time an app with a card is on screen (B6)."""
+        from .. import cards, state
+        pkg = (getattr(state, "last", None) or {}).get("pkg") or ""
+        if not pkg or pkg in self._cards_shown:
+            return None
+        self._cards_shown.add(pkg)
+        text = cards.load(pkg)
+        return (pkg, text) if text else None
+
     def _checkpoint(self) -> Optional[dict]:
         """Is a login / 2FA / challenge screen showing? Doctrine: stop here."""
         from .. import state
@@ -318,6 +329,7 @@ class Agent:
 
     def _run(self, goal: str) -> Iterator[dict]:
         started = time.time()
+        self._cards_shown = set()
         convention = self.chat.tool_convention
         self.messages = [
             {"role": "system",
@@ -404,6 +416,12 @@ class Agent:
                 ]
             self.messages.append(assistant)
 
+            # Notes the model must read - stagnation warnings, app cards - are
+            # held until every tool result of this turn is in. A user message
+            # between two tool results breaks the tool-calling format, and the
+            # old code also broke out of the batch on a warning, leaving the
+            # rest of the model's calls with no result at all.
+            pending: list[str] = []
             for call in reply.tool_calls:
                 steps += 1
                 name, args = call["name"], call["args"]
@@ -454,7 +472,6 @@ class Agent:
                     self.messages.append({
                         "role": "user",
                         "content": "Result of " + name + ":\n" + payload})
-                    # json mode: one call per turn, by protocol
 
                 if advice:
                     yield {"type": "note", "step": steps,
@@ -470,6 +487,18 @@ class Agent:
                         return
                     # The model has to SEE the warning, so it goes into the
                     # conversation, not just the event stream.
-                    self.messages.append({"role": "user",
-                                          "content": advice["message"]})
-                    break
+                    pending.append(advice["message"])
+
+                card = self._card()
+                if card:
+                    yield {"type": "note", "step": steps, "reason": "app_card",
+                           "package": card[0],
+                           "message": "app card for " + card[0] + " given to the model"}
+                    pending.append(card[1])
+
+                if not native:
+                    break                      # json mode: one call per turn
+
+            if pending:
+                self.messages.append({"role": "user",
+                                      "content": "\n\n".join(pending)})

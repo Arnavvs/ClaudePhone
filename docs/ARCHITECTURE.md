@@ -444,6 +444,46 @@ Verified from the Samsung over `adb reverse`: `/health` 200 without a token,
 `/budget` 401 without it and 200 with it, and @saravbhaita's ceilings came back
 scaled to 25% with the review note attached.
 
+### App cards and verified deep links (B6)
+
+An agent on the phone never read PROJECT-CONTEXT, so without help it would
+rediscover each trap - Instagram 446's search going silent after one query, the
+reel overlay lagging the swipe, a sheet left open stranding the next step - at
+the cost of steps and, on Instagram, of reads counted against the account.
+
+**Cards** (`src/claudephone/cards/<package>.md`) hold that knowledge per app:
+Instagram, Telegram and X today. The first time an app with a card comes to the
+front, the card goes into the conversation - once per run, so a run that never
+opens Instagram never pays for the Instagram card.
+
+**`open_link(url)`** replaces a navigation sequence with one intent - on
+Instagram, search + typing + tapping a result becomes a single profile open. It
+fails in ways that look like success, so it is strict:
+
+- only prefixes in `cards/deeplinks.json` are followed, and only once
+  `claudephone deeplinks --verify` has watched them land on a real phone;
+- the foreground must become the package the registry names - landing anywhere
+  else is an error, and nothing is recorded in the ledger;
+- a locked or sleeping phone is refused up front, because on a lock screen every
+  deep link "succeeds" and every read comes back empty (PROJECT-CONTEXT §6);
+- the URL comes from the model and goes into a shell command, so anything
+  outside a URL-safe character set is refused rather than escaped;
+- the read it stands for is still counted (a profile opened by link is a
+  `profile_open`).
+
+Verified 2026-09-18: `instagram://user?username=` (IG 447) and
+`twitter://user?screen_name=` (X 12.25) on the Samsung; `https://t.me/` and
+`tg://resolve?domain=` (Telegram 12.10) on the realme, which is where Telegram is
+installed - on the Samsung both correctly reported "did not land". The first
+verification attempt found the Samsung's screen had locked; all four were refused
+with nothing spent.
+
+**Notes now go in after a turn's tool results.** Stagnation warnings and cards
+are held until every tool call in the model's turn has its result. A user message
+between two tool results breaks the tool-calling format, and the B4 code also
+broke out of the batch on a warning, leaving the model's remaining calls with no
+result at all - reproduced on the old code: three calls, two results.
+
 ### Handing back to a person, and the screens that are not ours to clear (B3)
 
 Two directions, and they are not the same:

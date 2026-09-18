@@ -20,6 +20,7 @@ from .harness.registry import ToolRegistry
 from .tools import (compound_tools, device_tools, explore_tools, file_tools,
                     input_tools, registry_tools, shell_tools, system_tools,
                     thread_tools, ui_tools)
+from .tools import deeplink_tools
 from .tools import handoff_tools
 from .tools import phone_tools
 from .tools.apps import instagram as ig_tools
@@ -46,6 +47,7 @@ def build_registry() -> ToolRegistry:
         ui_tools.register(reg)
         input_tools.register(reg)
         handoff_tools.register(reg)
+        deeplink_tools.register(reg)
 
     # Compound actions belong in core: they are how the agent should move by
     # default, and gating them behind use_tools() would mean the expensive

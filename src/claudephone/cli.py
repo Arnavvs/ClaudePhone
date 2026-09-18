@@ -459,6 +459,41 @@ def cmd_abplan(a) -> int:
     return 0
 
 
+def cmd_deeplinks(a) -> int:
+    """List the deep-link registry, or verify its links on the phone (B6)."""
+    from . import cards
+    from .tools import deeplink_tools as dl
+    if not a.verify:
+        for e in cards.links():
+            v = e.get("verified") or {}
+            print("  %-30s -> %-26s %s" % (e["prefix"], e["package"],
+                  ("verified %s on %s, app %s" % (v.get("date"), v.get("device"),
+                                                  v.get("app_version")))
+                  if v else c("UNVERIFIED", YELLOW)))
+        return 0
+    lock, guard = None, None
+    try:
+        from .policy import writes as wr
+        sys.path.insert(0, wr._datacollect_dir())
+        import guard                                    # type: ignore
+        serial = dev.default_serial()
+        lock = guard.acquire(serial, "deeplinks-verify")
+        if not lock:
+            print(c("phone is held by " + str(guard.lock_holder(serial)), RED))
+            return 5
+    except ImportError:
+        guard = None
+    try:
+        rows = dl.verify(prefix=a.prefix)
+    finally:
+        if lock and guard is not None:
+            guard.release(lock)
+    for r in rows:
+        print("  %-30s %s" % (r["prefix"], "landed, app " + str(r.get("app_version"))
+                              if r["landed"] else c("NOT landed: " + str(r.get("error")), RED)))
+    return 0 if all(r["landed"] for r in rows) else 1
+
+
 def cmd_mcp(a) -> int:
     """Serve the same tools over MCP stdio, for a laptop Claude Code session."""
     from .mcp_server import main as mcp_main
@@ -566,6 +601,13 @@ def build_parser() -> argparse.ArgumentParser:
     pl.add_argument("--dry-run", action="store_true", dest="dry_run",
                     help="print the schedule and worst-case request count")
     pl.set_defaults(fn=cmd_abplan)
+
+    k = sub.add_parser("deeplinks", help="list or verify the deep-link registry (B6)")
+    k.add_argument("--verify", action="store_true",
+                   help="open each link's sample on the phone; mark those that land "
+                        "(each open is a counted read)")
+    k.add_argument("--prefix", default="", help="verify only this prefix")
+    k.set_defaults(fn=cmd_deeplinks)
 
     m = sub.add_parser("mcp", help="serve tools over MCP stdio")
     m.set_defaults(fn=cmd_mcp)

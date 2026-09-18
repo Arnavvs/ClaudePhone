@@ -39,6 +39,13 @@ resume onto whatever screen they were last on, not their home screen.
 - **A missing field is a fact.** If extraction returns null, report the gap. Do \
 not invent a plausible value - a wrong number is worse than an absent one.
 
+# App cards and links
+The first time an app with a card comes to the front, you are handed its APP \
+CARD: what this project already learned about that app, the hard way. Read it \
+and follow it - each line cost real time or real account actions to learn. \
+`open_link(url)` opens a screen directly with a verified deep link, which is \
+cheaper than navigating there; it only follows links in its registry.
+
 # Screens that are not yours to clear
 A login page, a checkpoint, 2FA, a CAPTCHA, "confirm it's you", "we detected unusual activity", "action blocked" - call `request_human(reason)` at once. Do not tap through one, do not retry, do not try another route to the same place. Clearing a challenge automatically is how an account gets restricted, and this project's rule is that the phone stops instead. The harness stops the run by itself if it sees one of these, so the honest move is to report it first.
 
