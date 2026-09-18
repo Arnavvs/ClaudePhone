@@ -19,6 +19,25 @@ Cheap models are the target, and they are uneven about function calling:
 
 `auto` starts native, and permanently falls back to json for the session the
 first time the endpoint rejects the `tools` parameter.
+
+## Two roles (B5)
+
+The only large ablation of phone agents (minitap, arXiv 2602.07787) found the
+DECISION role is where cheap models collapse - 100% to 11.2% with a budget
+decider - while the supporting roles held 50-58%. So the model that picks the
+next action and the model that does supporting work are configured separately:
+
+    CLAUDEPHONE_MODEL         the decider - every step goes through it
+    CLAUDEPHONE_HELPER_MODEL  summaries and other side work (defaults to the decider)
+
+## What a run costs
+
+OpenRouter now returns `usage.cost` on every completion, in credits (= USD), so
+cost is accumulated as a float alongside the token counts and the loop can stop
+a run on a dollar cap. Free models (`:free`) cost nothing but are rationed: 20
+requests a minute, and 50 a day on an account that has never bought $10 of
+credits (1000 a day after). Each request to one is counted, so the loop can stop
+before the day's allowance is gone rather than on a 429 halfway through a task.
 """
 
 from __future__ import annotations
@@ -45,6 +64,31 @@ class ModelError(RuntimeError):
     pass
 
 
+def is_free_model(model: str) -> bool:
+    """OpenRouter's rationed free tier: `:free` variants and the free router."""
+    m = (model or "").lower()
+    return m.endswith(":free") or m == "openrouter/free"
+
+
+def _read_key() -> str:
+    """OPENROUTER_API_KEY, or the contents of OPENROUTER_API_KEY_FILE.
+
+    The file form keeps the key out of shell history and process listings,
+    which matters on a phone where anything in Termux can read `ps`.
+    """
+    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if key:
+        return key
+    path = os.environ.get("OPENROUTER_API_KEY_FILE", "").strip()
+    if path:
+        try:
+            with open(os.path.expanduser(path), encoding="utf-8") as f:
+                return f.read().strip()
+        except OSError:
+            return ""
+    return ""
+
+
 @dataclass
 class Reply:
     content: str = ""
@@ -65,26 +109,34 @@ class ModelConfig:
     temperature: float = 0.2
     max_tokens: int = 2048
     timeout: int = 180
+    role: str = "decider"              # decider | helper (B5)
 
     @classmethod
-    def from_env(cls, provider: str = "") -> "ModelConfig":
+    def from_env(cls, provider: str = "", role: str = "decider") -> "ModelConfig":
         provider = (provider or os.environ.get("CLAUDEPHONE_PROVIDER")
                     or "openrouter").lower()
         if provider == "local":
+            model = os.environ.get("CLAUDEPHONE_LOCAL_MODEL", DEFAULT_LOCAL_MODEL)
+            if role == "helper":
+                model = os.environ.get("CLAUDEPHONE_LOCAL_HELPER_MODEL", model)
             return cls(
                 provider="local",
                 base_url=os.environ.get("CLAUDEPHONE_LOCAL_URL", LOCAL_BASE),
                 api_key=os.environ.get("CLAUDEPHONE_LOCAL_KEY", "sk-none"),
-                model=os.environ.get("CLAUDEPHONE_LOCAL_MODEL",
-                                     DEFAULT_LOCAL_MODEL),
+                model=model,
                 tool_mode=os.environ.get("CLAUDEPHONE_TOOL_MODE", "auto"),
+                role=role,
             )
+        decider = os.environ.get("CLAUDEPHONE_MODEL", DEFAULT_REMOTE_MODEL)
+        model = (os.environ.get("CLAUDEPHONE_HELPER_MODEL") or decider
+                 if role == "helper" else decider)
         return cls(
             provider="openrouter",
             base_url=os.environ.get("CLAUDEPHONE_BASE_URL", OPENROUTER_BASE),
-            api_key=os.environ.get("OPENROUTER_API_KEY", ""),
-            model=os.environ.get("CLAUDEPHONE_MODEL", DEFAULT_REMOTE_MODEL),
+            api_key=_read_key(),
+            model=model,
             tool_mode=os.environ.get("CLAUDEPHONE_TOOL_MODE", "auto"),
+            role=role,
         )
 
 
@@ -167,10 +219,18 @@ def parse_json_tool_call(text: str) -> tuple[str, list[dict]]:
 class Chat:
     """One conversation endpoint. Stateless - the loop owns the messages."""
 
+    # 429 back-off, in seconds, when the server does not say how long to wait.
+    # OpenRouter's free tier allows 20 requests a minute.
+    RETRY_WAITS = (4.0, 10.0, 25.0)
+
     def __init__(self, cfg: ModelConfig) -> None:
         self.cfg = cfg
         self._native_ok = cfg.tool_mode != "json"
-        self.total_usage: dict[str, int] = {}
+        # Token counts are ints; `cost` is a float in credits (= USD).
+        self.total_usage: dict[str, Any] = {}
+        self.requests = 0                    # completions that came back
+        self.free_requests = 0               # ... of which on a rationed free model
+        self.rate_limited = 0                # 429s absorbed by waiting
 
     # -- http ----------------------------------------------------------------
 
@@ -188,18 +248,37 @@ class Chat:
             headers["X-Title"] = "ClaudePhone"
         req = urllib.request.Request(url, data=body, headers=headers,
                                      method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=self.cfg.timeout) as r:
-                return json.loads(r.read().decode())
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode(errors="replace")[:800]
-            raise ModelError("HTTP " + str(e.code) + " from " + url + ": "
-                             + detail) from None
-        except urllib.error.URLError as e:
-            raise ModelError(
-                "cannot reach " + url + " (" + str(e.reason) + "). "
-                + ("Is llama-server running?" if self.cfg.provider == "local"
-                   else "Check network / OPENROUTER_API_KEY.")) from None
+        waits = list(self.RETRY_WAITS)
+        while True:
+            try:
+                with urllib.request.urlopen(req, timeout=self.cfg.timeout) as r:
+                    return json.loads(r.read().decode())
+            except urllib.error.HTTPError as e:
+                detail = e.read().decode(errors="replace")[:800]
+                if e.code == 429 and waits:
+                    # Rate limited, not refused: wait as long as asked, else back
+                    # off. A daily free-tier cap also answers 429, and waiting
+                    # cannot fix that - it surfaces once the retries run out.
+                    try:
+                        wait = float(e.headers.get("Retry-After") or waits[0])
+                    except (TypeError, ValueError):
+                        wait = waits[0]
+                    waits.pop(0)
+                    self.rate_limited += 1
+                    time.sleep(min(max(wait, 1.0), 60.0))
+                    continue
+                if e.code == 402:
+                    raise ModelError(
+                        "HTTP 402 from " + url + ": no credits on this account. "
+                        "Use a ':free' model (CLAUDEPHONE_MODEL=...:free) or add "
+                        "credits. " + detail[:300]) from None
+                raise ModelError("HTTP " + str(e.code) + " from " + url + ": "
+                                 + detail) from None
+            except urllib.error.URLError as e:
+                raise ModelError(
+                    "cannot reach " + url + " (" + str(e.reason) + "). "
+                    + ("Is llama-server running?" if self.cfg.provider == "local"
+                       else "Check network / OPENROUTER_API_KEY.")) from None
 
     # -- completion ----------------------------------------------------------
 
@@ -247,12 +326,21 @@ class Chat:
 
         usage = data.get("usage") or {}
         for k, v in usage.items():
-            if isinstance(v, int):
+            # bool is an int subclass; OpenRouter sends is_byok as one.
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
                 self.total_usage[k] = self.total_usage.get(k, 0) + v
+        self.requests += 1
+        if is_free_model(self.cfg.model):
+            self.free_requests += 1
         return Reply(content=content, tool_calls=calls, usage=usage,
                      finish_reason=choice.get("finish_reason") or "",
                      model=data.get("model") or self.cfg.model,
                      ms=int((time.time() - t0) * 1000))
+
+    @property
+    def cost(self) -> float:
+        """What this chat has cost so far, in credits (= USD)."""
+        return float(self.total_usage.get("cost") or 0.0)
 
     @property
     def tool_convention(self) -> str:
@@ -269,3 +357,33 @@ class Chat:
         except ModelError as e:
             return {"ok": False, "provider": self.cfg.provider,
                     "model": self.cfg.model, "error": str(e)[:300]}
+
+
+def key_status(cfg: Optional[ModelConfig] = None, timeout: float = 20.0) -> dict:
+    """What the OpenRouter key has left. Does not consume the free-model quota.
+
+    -> {ok, is_free_tier, free_remaining, free_limit, limit_remaining, usage,
+        expires_at} or {ok: False, error}. Never includes the key or its label.
+    """
+    cfg = cfg or ModelConfig.from_env()
+    if cfg.provider != "openrouter":
+        return {"ok": False, "error": "not an OpenRouter config"}
+    if not cfg.api_key:
+        return {"ok": False, "error": "no key: set OPENROUTER_API_KEY or "
+                                      "OPENROUTER_API_KEY_FILE"}
+    req = urllib.request.Request(cfg.base_url.rstrip("/") + "/key",
+                                 headers={"Authorization": "Bearer " + cfg.api_key})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = (json.loads(r.read().decode()) or {}).get("data") or {}
+    except Exception as e:
+        return {"ok": False, "error": type(e).__name__ + ": " + str(e)[:200]}
+    free = d.get("free_model_daily_requests") or {}
+    return {"ok": True,
+            "is_free_tier": d.get("is_free_tier"),
+            "free_remaining": free.get("remaining"),
+            "free_limit": free.get("limit"),
+            "limit_remaining": d.get("limit_remaining"),
+            "usage": d.get("usage"),
+            "usage_daily": d.get("usage_daily"),
+            "expires_at": d.get("expires_at")}

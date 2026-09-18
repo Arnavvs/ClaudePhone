@@ -124,10 +124,18 @@ def build_agent(provider: str = "", model: str = "", mode: str = "auto",
                 allow_rules: Optional[list[str]] = None,
                 allow_uncounted_reads: bool = False,
                 stagnation: bool = True,
-                on_ask_operator=None) -> Agent:
+                on_ask_operator=None,
+                helper_model: str = "",
+                summarize: bool = False) -> Agent:
     cfg = ModelConfig.from_env(provider)
     if model:
         cfg.model = model
+    # B5: a separate helper only when one is named; otherwise the decider does
+    # the side work too, and is counted once.
+    hcfg = ModelConfig.from_env(provider, role="helper")
+    if helper_model:
+        hcfg.model = helper_model
+    helper = Chat(hcfg) if hcfg.model and hcfg.model != cfg.model else None
     reg = build_registry()
     for p in packs or []:
         if p in reg.packs():
@@ -144,4 +152,6 @@ def build_agent(provider: str = "", model: str = "", mode: str = "auto",
         # operator watching a run by hand usually wants.
         stagnation=Stagnation() if stagnation else Stagnation(stop_after=0),
         on_ask_operator=on_ask_operator,
+        helper=helper,
+        summarize=summarize,
     )

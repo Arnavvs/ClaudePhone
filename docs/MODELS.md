@@ -23,9 +23,14 @@ Driving a phone is not a hard reasoning task, but it is an unforgiving one:
 ## OpenRouter (default)
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-v1-...
+export OPENROUTER_API_KEY_FILE=~/openrouterkey.txt   # or OPENROUTER_API_KEY=sk-or-v1-...
 export CLAUDEPHONE_MODEL=deepseek/deepseek-v4-flash-0731
 ```
+
+The file form keeps the key out of shell history and out of `ps`, which matters
+on a phone where anything running in Termux can list processes. `claudephone
+doctor` reports the key's tier, expiry and remaining free requests **without
+spending one**; `--probe` adds a real completion.
 
 The default is **`deepseek/deepseek-v4-flash-0731`** — $0.05/M input, $0.16/M
 output, native tool calling, a sparse MoE with 13B active parameters. At those
@@ -35,21 +40,58 @@ Alternatives worth knowing:
 
 | Model | Input / Output per M | Note |
 |---|---|---|
-| `deepseek/deepseek-v4-flash-0731` | $0.05 / $0.16 | current default |
-| `deepseek/deepseek-v4-flash` | $0.068 / $0.168 | 1M context |
-| `minimax/minimax-m3:free` | free | rate-limited, good for smoke tests |
-| `nvidia/nemotron-3-ultra-550b-a55b:free` | free | rate-limited |
+| `deepseek/deepseek-v4-flash-0731` | $0.06 / $0.12 | current default |
+| `deepseek/deepseek-v4-flash-0731:free` | free | **the same model, rationed** |
+| `qwen/qwen3.8-27b:free` | free | tool calling, text + image |
+| `nvidia/nemotron-3-ultra-550b-a55b:free` | free | tool calling |
+| `liquid/lfm-2.5-2.6b:free` | free | tiny; the "cheap decider" case |
 | `anthropic/claude-haiku-4.5` | $1 / $5 | when a cheap model keeps failing |
 
-> **Verify before committing.** Model availability and pricing on OpenRouter
-> change faster than this file. Check the live
-> [tool-calling collection](https://openrouter.ai/collections/tool-calling-models)
-> and [free models](https://openrouter.ai/collections/free-models). Free tiers
-> are typically capped around 20 requests/minute — an agent loop will hit that.
+Free rows checked against `/api/v1/models` on 2026-09-18: 21 free models
+advertise tool calling. Availability and pricing move faster than this file.
+
+### The free tier, exactly
+
+From OpenRouter's limits page and a real key's `GET /api/v1/key`:
+
+| | limit |
+|---|---|
+| requests per minute, any `:free` model | **20** |
+| requests per day, account that has bought < $10 of credits | **50** |
+| requests per day, account that has bought ≥ $10 | 1000 |
+| an account with a negative balance | 402, even on free models |
+
+Fifty a day is the binding one: **every agent step is one request**, so it is
+about five ten-step runs. The loop reads the remaining count once at the start
+of a run (`/key` does not spend quota), counts its own requests, and stops with
+`stopped_by="free_quota"` while `--free-reserve` (default 2) are still left. A
+429 is waited out - `Retry-After` if the server sends one, otherwise 4 s, 10 s,
+25 s - before it is reported; a daily cap also answers 429, which no wait fixes.
+A paid model on a key with no credits answers 402, and the error says to use a
+`:free` model rather than leaving you to decode it.
 
 `openrouter/free` is a router that picks among free models while filtering for
 requested capabilities such as tool calling; convenient, but the model you get
 varies between runs, which makes debugging harder.
+
+---
+
+## Two roles: the decider and the helper
+
+```bash
+export CLAUDEPHONE_MODEL=deepseek/deepseek-v4-flash-0731:free     # picks every action
+export CLAUDEPHONE_HELPER_MODEL=liquid/lfm-2.5-2.6b:free          # side work
+```
+
+The only large ablation of phone agents (minitap, arXiv 2602.07787) found the
+**decision** role is where cheap models collapse — task success fell from 100%
+to 11.2% with a budget decider — while supporting roles held 50–58%. So they are
+configured separately, and the helper defaults to the decider when unset.
+
+The helper's first job is `--summarize`: one call after the run, writing what
+actually happened from the tool-call record. It is deliberately the cheapest
+useful thing a second model can do - one request, after the decider is done -
+and the side of the split the ablation says a small model can hold.
 
 ---
 
@@ -126,13 +168,17 @@ per turn, because small models lose track when asked to batch.
   instead of ~12,200. This is the single biggest lever —
   [measured](BENCHMARKS.md#2-tool-schema-overhead).
 - **Compaction.** Tool results older than 6 steps are clipped automatically.
-- **Budgets.** `--max-steps` (default 30) and `Budget.max_tokens` (250k) both
-  hard-stop a run and report why.
+- **Budgets.** `--max-steps` (default 30), `Budget.max_tokens` (250k),
+  **`--max-usd`** (default $0.25, decider and helper together, from the
+  `usage.cost` OpenRouter returns on every completion) and **`--free-reserve`**
+  all hard-stop a run and report why. A $2 cap is what caught a runaway task in
+  agent-for-mobile; this default is tighter because a run here costs cents.
 - **Screens, not screenshots.** `ui_dump` returns 1–3 KB of typed elements;
   `screenshot` returns a *path*, never image data, so it cannot silently
   multiply your bill.
 
-Every run's `final` event carries the usage totals; the CLI prints them:
+Every run's `final` event carries the usage totals plus `cost_usd`, `requests`
+and, on free models, `free_requests_left`; the CLI prints them:
 
 ```
 — 3 steps · 6.1s · 4,120 tokens

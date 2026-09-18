@@ -118,12 +118,15 @@ def cmd_run(a) -> int:
     agent = build_agent(
         provider=a.provider, model=a.model, mode=a.mode,
         allow=a.allow or [], deny=a.deny or [], packs=a.pack or [],
-        budget=Budget(max_steps=a.max_steps, max_seconds=a.max_seconds),
+        budget=Budget(max_steps=a.max_steps, max_seconds=a.max_seconds,
+                      max_usd=a.max_usd, free_reserve=a.free_reserve),
         operator_notes=a.notes or "", on_ask=ask,
         allow_writes=a.allow_write or [], allow_rules=a.allow_rule or [],
         allow_uncounted_reads=a.allow_uncounted_reads,
         stagnation=not a.no_stagnation_stop,
         on_ask_operator=ask_operator,
+        helper_model=a.helper_model,
+        summarize=a.summarize,
     )
     goal = " ".join(a.goal)
     failed = False
@@ -244,12 +247,33 @@ def cmd_doctor(a) -> int:
 
     print(c("\nmodel", BOLD))
     cfg = ModelConfig.from_env(a.provider)
+    hcfg = ModelConfig.from_env(a.provider, role="helper")
     print("  provider         : " + cfg.provider)
-    print("  model            : " + cfg.model)
+    print("  decider          : " + cfg.model)
+    print("  helper           : " + hcfg.model
+          + ("" if hcfg.model != cfg.model else "  (same as decider)"))
     print("  base_url         : " + cfg.base_url)
     if cfg.provider == "openrouter" and not cfg.api_key:
-        print(c("    -> OPENROUTER_API_KEY is not set", YELLOW))
+        print(c("    -> no key: set OPENROUTER_API_KEY or OPENROUTER_API_KEY_FILE",
+                YELLOW))
         ok = False
+    elif cfg.provider == "openrouter" and not a.probe:
+        # Reading the key's status costs nothing; a completion would spend one of
+        # the day's free requests, so it is opt-in (--probe).
+        from .harness.models import key_status, is_free_model
+        st = key_status(cfg)
+        if st.get("ok"):
+            print("  key              : free tier = " + str(st.get("is_free_tier"))
+                  + ", expires " + str(st.get("expires_at")))
+            print("  free requests    : " + str(st.get("free_remaining")) + " of "
+                  + str(st.get("free_limit")) + " left today")
+            if not is_free_model(cfg.model) and st.get("is_free_tier"):
+                print(c("    -> decider is a paid model on a key with no credits; "
+                        "it will 402. Use a ':free' model.", YELLOW))
+                ok = False
+        else:
+            print(c("  key              : " + st.get("error", "?")[:200], RED))
+            ok = False
     else:
         h = Chat(cfg).health()
         if h.get("ok"):
@@ -374,6 +398,17 @@ def build_parser() -> argparse.ArgumentParser:
                         "when no ledger is reachable, e.g. on the phone; results "
                         "say counted=false")
     r.add_argument("--max-steps", type=int, default=30, dest="max_steps")
+    r.add_argument("--helper-model", default="", dest="helper_model",
+                   help="model for side work (summaries); defaults to "
+                        "CLAUDEPHONE_HELPER_MODEL, then the decider")
+    r.add_argument("--max-usd", type=float, default=0.25, dest="max_usd",
+                   help="stop the run once OpenRouter reports this much spent "
+                        "(decider + helper); 0 = no cap")
+    r.add_argument("--free-reserve", type=int, default=2, dest="free_reserve",
+                   help="on ':free' models, stop with this many of the day's "
+                        "free requests left")
+    r.add_argument("--summarize", action="store_true",
+                   help="after the run, one helper call writes what happened")
     r.add_argument("--max-seconds", type=float, default=900.0,
                    dest="max_seconds")
     r.add_argument("--notes", default="", help="extra operator instructions")
@@ -397,6 +432,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     d = sub.add_parser("doctor", help="check the whole setup end to end")
     d.add_argument("--provider", default="")
+    d.add_argument("--probe", action="store_true",
+                   help="also send one completion (spends a free request)")
     d.set_defaults(fn=cmd_doctor)
 
     n = sub.add_parser("runs", help="list or replay recorded runs")

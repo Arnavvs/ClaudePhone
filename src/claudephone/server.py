@@ -215,6 +215,9 @@ class Handler(BaseHTTPRequestHandler):
         budget = Budget(
             max_steps=int(body.get("max_steps") or 30),
             max_seconds=float(body.get("max_seconds") or 900),
+            max_usd=float(body.get("max_usd") if body.get("max_usd") is not None
+                          else 0.25),
+            free_reserve=int(body.get("free_reserve") or 2),
         )
         session_id = secrets.token_hex(8)
 
@@ -250,6 +253,8 @@ class Handler(BaseHTTPRequestHandler):
                 allow_uncounted_reads=bool(body.get("allow_uncounted_reads")),
                 stagnation=bool(body.get("stagnation", True)),
                 on_ask_operator=ask_operator,
+                helper_model=body.get("helper_model") or "",
+                summarize=bool(body.get("summarize")),
             )
         except Exception as e:
             return self._send(500, {"error": "could not build agent: "

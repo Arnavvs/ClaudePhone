@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Optional
 
 from . import handoff, recorder
-from .models import Chat, ModelError
+from .models import Chat, ModelError, is_free_model, key_status
 from .prompt import build_system
 from .registry import ToolRegistry
 from .stagnation import Stagnation
@@ -51,14 +51,28 @@ class Budget:
     max_steps: int = 30
     max_seconds: float = 900.0
     max_tokens: int = 250_000
+    # B5. Dollars as OpenRouter reports them (usage.cost), decider and helper
+    # together; 0 turns the cap off. A $2 cap is what caught a runaway task in
+    # agent-for-mobile - this default is an order of magnitude tighter because
+    # this project's decider costs cents per run, not dollars.
+    max_usd: float = 0.25
+    # Free models are rationed per DAY (50 on a never-paid account). Stop with
+    # this many left rather than on a 429 mid-task, so a person still has a few
+    # requests for a doctor check or a question.
+    free_reserve: int = 2
 
-    def exceeded(self, steps: int, started: float, tokens: int) -> str:
+    def exceeded(self, steps: int, started: float, tokens: int,
+                 usd: float = 0.0, free_left: Optional[int] = None) -> str:
         if steps >= self.max_steps:
             return "max_steps (" + str(self.max_steps) + ")"
         if time.time() - started > self.max_seconds:
             return "max_seconds (" + str(int(self.max_seconds)) + ")"
         if tokens > self.max_tokens:
             return "max_tokens (" + str(self.max_tokens) + ")"
+        if self.max_usd and usd >= self.max_usd:
+            return "max_usd ($%.4f of $%.2f)" % (usd, self.max_usd)
+        if free_left is not None and free_left <= self.free_reserve:
+            return "free_quota (" + str(free_left) + " free requests left today)"
         return ""
 
 
@@ -106,7 +120,9 @@ class Agent:
                  budget: Optional[Budget] = None,
                  operator_notes: str = "",
                  stagnation: Optional[Stagnation] = None,
-                 on_ask_operator=None) -> None:
+                 on_ask_operator=None,
+                 helper: Optional[Chat] = None,
+                 summarize: bool = False) -> None:
         self.chat = chat
         self.reg = registry
         self.policy = policy or Policy()
@@ -114,7 +130,61 @@ class Agent:
         self.operator_notes = operator_notes
         self.stagnation = stagnation if stagnation is not None else Stagnation()
         self.on_ask_operator = on_ask_operator
+        # B5: the helper does side work so the decider's context and budget go
+        # on decisions. Defaults to the decider when not configured separately.
+        self.helper = helper
+        self.summarize = summarize
+        self._free_start: Optional[int] = None
         self.messages: list[dict] = []
+
+    # -- spend (B5) ----------------------------------------------------------
+
+    def spend_usd(self) -> float:
+        seen, total = set(), 0.0
+        for c in (self.chat, self.helper):
+            if c is not None and id(c) not in seen:
+                seen.add(id(c))
+                total += getattr(c, "cost", 0.0) or 0.0
+        return total
+
+    def free_left(self) -> Optional[int]:
+        """Free-model requests left today, counted locally from one /key read."""
+        if self._free_start is None:
+            return None
+        seen, used = set(), 0
+        for c in (self.chat, self.helper):
+            if c is not None and id(c) not in seen:
+                seen.add(id(c))
+                used += getattr(c, "free_requests", 0)
+        return self._free_start - used
+
+    def _read_free_quota(self) -> dict:
+        """One /key read at the start of a run, only if a free model is in play."""
+        models = [c.cfg.model for c in (self.chat, self.helper)
+                  if c is not None and getattr(c, "cfg", None) is not None]
+        uses_free = any(is_free_model(m) for m in models)
+        if not uses_free or getattr(self.chat.cfg, "provider", "") != "openrouter":
+            self._free_start = None
+            return {}
+        st = key_status(self.chat.cfg)
+        if st.get("ok") and isinstance(st.get("free_remaining"), int):
+            self._free_start = st["free_remaining"]
+        return st
+
+    def accounting(self) -> dict:
+        seen, requests, limited = set(), 0, 0
+        for c in (self.chat, self.helper):
+            if c is not None and id(c) not in seen:
+                seen.add(id(c))
+                requests += getattr(c, "requests", 0)
+                limited += getattr(c, "rate_limited", 0)
+        out = {"cost_usd": round(self.spend_usd(), 6), "requests": requests}
+        if limited:
+            out["rate_limited"] = limited
+        left = self.free_left()
+        if left is not None:
+            out["free_requests_left"] = left
+        return out
 
     # -- context -------------------------------------------------------------
 
@@ -164,12 +234,12 @@ class Agent:
                      run_id=rec.run_id if rec is not None else "",
                      allow_uncounted_reads=self.policy.allow_uncounted_reads)
         if rec is None:
-            yield from self._run(goal)
+            yield from self._accounted(goal)
             return
 
         outcome = "abandoned"
         try:
-            for ev in self._run(goal):
+            for ev in self._accounted(goal):
                 kind = ev.get("type")
                 if kind == "start":
                     # Tell the consumer where this run is being written, so a
@@ -191,6 +261,54 @@ class Agent:
         finally:
             rec.close(outcome)
 
+    def _accounted(self, goal: str) -> Iterator[dict]:
+        """_run, with spend attached to the final event and an optional summary."""
+        trail: list[dict] = []
+        for ev in self._run(goal):
+            kind = ev.get("type")
+            if kind == "tool_call":
+                trail.append({"step": ev.get("step"), "tool": ev.get("tool"),
+                              "args": ev.get("args")})
+            if kind == "final":
+                ev = dict(ev, **self.accounting())
+                yield ev
+                if self.summarize:
+                    s = self._summary(goal, trail, ev)
+                    if s:
+                        yield s
+                continue
+            yield ev
+
+    def _summary(self, goal: str, trail: list, final: dict) -> Optional[dict]:
+        """One helper call: what happened, in three sentences. Opt-in (B5).
+
+        This is the helper role's first job because it is the cheapest useful
+        one - a single request per run, after the decider is done - and it is
+        exactly the kind of side work the ablation found cheap models handle.
+        """
+        chat = self.helper or self.chat
+        left = self.free_left()
+        if left is not None and left <= self.budget.free_reserve:
+            return {"type": "summary", "skipped": "free quota at reserve"}
+        steps = "\n".join("%s. %s(%s)" % (t["step"], t["tool"],
+                                          json.dumps(t["args"], default=str)[:80])
+                          for t in trail[-25:])
+        prompt = ("A phone agent was given this goal:\n" + goal + "\n\nIt made "
+                  "these tool calls:\n" + (steps or "(none)") + "\n\nIt stopped "
+                  "because: " + str(final.get("stopped_by") or "it said it was done")
+                  + "\nIts last words: " + str(final.get("content") or "")[:600]
+                  + "\n\nIn at most three sentences: did it achieve the goal, "
+                  "what did it actually find, and if it failed, where. Say only "
+                  "what the record supports.")
+        try:
+            r = chat.complete([{"role": "user", "content": prompt}])
+        except ModelError as e:
+            return {"type": "summary", "error": str(e)[:200]}
+        return {"type": "summary", "model": chat.cfg.model,
+                "role": getattr(chat.cfg, "role", ""),
+                "content": (r.content or "").strip(),
+                "cost_usd": round(self.spend_usd(), 6)}
+
     def _checkpoint(self) -> Optional[dict]:
         """Is a login / 2FA / challenge screen showing? Doctrine: stop here."""
         from .. import state
@@ -207,7 +325,12 @@ class Agent:
                                      self.operator_notes)},
             {"role": "user", "content": goal},
         ]
+        quota = self._read_free_quota()
         yield {"type": "start", "goal": goal, "model": self.chat.cfg.model,
+               "helper_model": (self.helper.cfg.model if self.helper is not None
+                                else self.chat.cfg.model),
+               "free_requests_left": self._free_start,
+               "key_expires_at": quota.get("expires_at"),
                "provider": self.chat.cfg.provider,
                "tool_convention": convention,
                "tools_loaded": len(self.reg.specs()),
@@ -217,7 +340,9 @@ class Agent:
         stag = self.stagnation
         while True:
             tokens = self.chat.total_usage.get("total_tokens", 0)
-            stop = self.budget.exceeded(steps, started, tokens)
+            stop = self.budget.exceeded(steps, started, tokens,
+                                        usd=self.spend_usd(),
+                                        free_left=self.free_left())
             if stop:
                 yield {"type": "budget", "stopped_by": stop, "steps": steps}
                 yield {"type": "final", "content": "",
