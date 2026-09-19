@@ -142,13 +142,14 @@ The saving is the expensive turns, not the network —
 
 ## The tool surface
 
-**157 tools in 11 packs.** Only `core` (31) is loaded at the start of a run; the
-agent widens its own surface with `use_tools(pack)`. Exposing all 157 would cost
-~14,600 tokens of schema **per turn** against ~2,600 for core.
+**164 tools in 11 packs.** Only `core` (38) is loaded at the start of a run; the
+agent widens its own surface with `use_tools(pack)`. Exposing all 164 would cost
+roughly 16,500 tokens of schema **per turn** against roughly 4,200 for core
+(a characters/4 estimate, 2026-09-19).
 
 | Pack | Tools | What |
 |---|---|---|
-| `core` | 31 | Screen reading, tapping, typing, app launch, tool discovery |
+| `core` | 38 | Screen reading, tapping, typing, app launch, tool discovery, deep links, notes/recall, diagnose, handoff |
 | `phone` | 29 | SMS, calls, camera, GPS, sensors, torch, TTS, notifications, Wi-Fi |
 | `x` | 23 | X/Twitter timelines, search, feed-shaping controls |
 | `telegram` | 13 | Channels and chats: read, search, join, reply |
