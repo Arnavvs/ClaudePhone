@@ -35,7 +35,9 @@ recorder keeps them whole.
   wanted to look at.
 * **One line per event, unmodified.** The stream on disk is the stream the
   consumer saw, plus `seq` and `at`. No reshaping, so a later reader never has
-  to guess what was dropped.
+  to guess what was dropped. The file holds more than the stream, never less:
+  per-step `decision` records, a `final_screen` record and automatic `label`
+  rows (B8) are written here and not streamed.
 
 ## Format
 
@@ -261,6 +263,10 @@ def summarise(run_id: str) -> dict:
         "tokens": (final.get("usage") or {}).get("total_tokens"),
         "answer": final.get("content"),
         "labels": [r for r in rows if r.get("kind") == "label"],
+        # B8: the newest automatic verdict, if the run was verified.
+        "verdict": next((r.get("verdict") for r in reversed(rows)
+                         if r.get("kind") == "label" and r.get("by") == "verify"),
+                        None),
     }
 
 

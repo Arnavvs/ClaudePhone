@@ -130,7 +130,9 @@ def build_agent(provider: str = "", model: str = "", mode: str = "auto",
                 stagnation: bool = True,
                 on_ask_operator=None,
                 helper_model: str = "",
-                summarize: bool = False) -> Agent:
+                summarize: bool = False,
+                verify_spec: Optional[dict] = None,
+                judge: bool = False) -> Agent:
     cfg = ModelConfig.from_env(provider)
     if model:
         cfg.model = model
@@ -158,4 +160,6 @@ def build_agent(provider: str = "", model: str = "", mode: str = "auto",
         on_ask_operator=on_ask_operator,
         helper=helper,
         summarize=summarize,
+        verify_spec=verify_spec,
+        judge=judge,
     )

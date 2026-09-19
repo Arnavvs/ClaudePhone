@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Optional
 
-from . import handoff, history, recorder
+from . import decisions, handoff, history, recorder, verify
 from .models import Chat, ModelError, is_free_model, key_status
 from .prompt import build_system
 from .registry import ToolRegistry
@@ -126,7 +126,9 @@ class Agent:
                  stagnation: Optional[Stagnation] = None,
                  on_ask_operator=None,
                  helper: Optional[Chat] = None,
-                 summarize: bool = False) -> None:
+                 summarize: bool = False,
+                 verify_spec: Optional[dict] = None,
+                 judge: bool = False) -> None:
         self.chat = chat
         self.reg = registry
         self.policy = policy or Policy()
@@ -140,6 +142,10 @@ class Agent:
         self.summarize = summarize
         self._free_start: Optional[int] = None
         self._cards_shown: set = set()
+        # B8: what success looks like for this task (harness/verify.py), and
+        # whether an inconclusive check may be settled by one helper call.
+        self.verify_spec = verify_spec
+        self.judge = judge
         self.messages: list[dict] = []
 
     # -- spend (B5) ----------------------------------------------------------
@@ -255,27 +261,34 @@ class Agent:
                      allow_rules=self.policy.allow_rules,
                      run_id=rec.run_id if rec is not None else "",
                      allow_uncounted_reads=self.policy.allow_uncounted_reads)
-        if rec is None:
-            for ev in self._accounted(goal):
-                history.current.event(ev)
-                yield ev
-            return
-
+        # Everything this run produced, for the verifier (B8) - the same rows
+        # the run file holds, so a run with recording off verifies too.
+        rows: list[dict] = [{"kind": "meta", "goal": goal}]
         outcome = "abandoned"
         try:
             for ev in self._accounted(goal):
                 kind = ev.get("type")
-                if kind == "start":
+                if kind == "start" and rec is not None:
                     # Tell the consumer where this run is being written, so a
                     # CLI can print it and a streaming client can reference it.
                     ev = dict(ev, run_id=rec.run_id, run_path=rec.path)
-                rec.event(ev)
+                if rec is not None:
+                    rec.event(ev)
                 history.current.event(ev)
+                rows.append(ev)
+                if kind == "decision":
+                    continue              # the run file only, never the stream
                 if kind == "final":
                     outcome = ev.get("stopped_by") or "completed"
+                    fs = decisions.final_screen(time.time())
+                    rows.append(fs)
+                    if rec is not None:
+                        rec.event(fs)
                 elif kind == "error":
                     outcome = "error"
                 yield ev
+                if kind == "final" and self.verify_spec:
+                    yield self._verify(rows, rec)
         except GeneratorExit:
             # The consumer stopped reading - a disconnected HTTP client, or a
             # Ctrl-C in the CLI. That is abandonment, not a crash.
@@ -284,7 +297,27 @@ class Agent:
             outcome = "exception: " + type(e).__name__ + ": " + str(e)[:160]
             raise
         finally:
-            rec.close(outcome)
+            if rec is not None:
+                rec.close(outcome)
+
+    def _verify(self, rows: list, rec) -> dict:
+        """Check the run against its task's milestones and label it (B8)."""
+        chat = (self.helper or self.chat) if self.judge else None
+        if chat is not None:
+            left = self.free_left()
+            if left is not None and left <= self.budget.free_reserve:
+                chat = None               # no quota for a judge; stay inconclusive
+        result = verify.verify(rows, self.verify_spec, chat=chat)
+        if rec is not None:
+            from datetime import datetime
+            rec.event(dict(verify.label_fields(result, self.verify_spec),
+                           kind="label", labelled=datetime.now().astimezone()
+                           .isoformat(timespec="seconds")))
+        return {"type": "verification", "verdict": result["verdict"],
+                "decided_by": result.get("by"),
+                "checks": [{"status": c["status"], "why": c["why"],
+                            "check": c["check"]} for c in result["checks"]],
+                "judge": result.get("judge")}
 
     def _accounted(self, goal: str) -> Iterator[dict]:
         """_run, with spend attached to the final event and an optional summary."""
@@ -374,6 +407,7 @@ class Agent:
 
         steps = 0
         stag = self.stagnation
+        dlog = decisions.DecisionLog()
         last_thought = ""
         while True:
             tokens = self.chat.total_usage.get("total_tokens", 0)
@@ -455,6 +489,7 @@ class Agent:
                 ok, why = self.policy.check(self.reg, name, args)
                 fp_before = stag.before() if stag else ""
                 before = history.snapshot(state.last)
+                seen = dlog.before()
                 result = ({"error": "blocked: " + why} if not ok
                           else self.reg.call(name, args))
                 cap = history.capsule(steps, name, args, result, before,
@@ -464,6 +499,7 @@ class Agent:
                 yield {"type": "tool_result", "step": steps, "tool": name,
                        "ok": "error" not in result,
                        "ms": result.get("_ms"), "result": result}
+                yield dlog.record(steps, name, args, result, seen, time.time())
 
                 advice = stag.observe(steps, name, args, fp_before) if stag else None
 

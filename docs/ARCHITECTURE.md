@@ -252,13 +252,70 @@ claudephone runs <run_id>        # replay one, step by step
 claudephone runs <run_id> --json # raw events, for a training set
 ```
 
-The recorder knows what happened but not whether it was any good, so the outcome
-label is appended afterwards by whoever watched:
+The recorder knows what happened but not whether it was any good. A person can
+append a label afterwards:
 
 ```python
 from claudephone.harness import recorder
 recorder.label("20260905-213700-a3f2", success=True, note="two extra dumps")
 ```
+
+### Automatic verification and decision records (B8)
+
+Manual labels meant almost no run had one. Replay (B9) and any learned verifier
+later need runs labelled reliably. So a task can now declare what success looks
+like, in checks a program decides (`harness/verify.py`):
+
+| check | passes when |
+|---|---|
+| `answer` | the final answer matches a regex |
+| `reached_text` | a regex matches text on any screen read |
+| `final_text` | a regex matches text on the last screen read |
+| `package` / `reached_package` | that app was in front at the end / at any point |
+| `field` | a tool result carried that field with a non-null value |
+| `milestones` | several texts were reached, in order (MobiFlow's DAG, as a sequence) |
+
+- **Three outcomes, not two.** Each check is `pass`, `fail` or `inconclusive`. A
+  run passes only if every check passes; one fail fails it. `final_text` on a
+  run from before B8, or on a last screen read more than 120 s before the end, is
+  inconclusive, not failed.
+- **A model only when unsure, and only when asked.** With `--judge`, an
+  inconclusive run gets one helper call. The helper sees the record, not the
+  phone, and may answer `unsure`. It is never asked when the checks decided.
+- **Screen evidence is screen evidence.** Text counts as reached only if it came
+  from a screen read: element texts, `appeared` lists, the final screen. A tool's
+  own words never count. `find_element` saying "no element matching 'Screen
+  timeout'" is not evidence of reaching the Screen timeout screen.
+- **The verdict is appended as a `label` row** (`by: "verify"`), next to any
+  human label, never replacing one. `claudephone runs` shows it.
+
+```bash
+claudephone run "What is the screen timeout?" --expect '\b10\s*min' --reached 'screen timeout'
+claudephone run "<goal>" --verify evals/tasks/screen_timeout.json [--judge]
+claudephone verify latest --expect 'april\s*2022'        # check an old run
+claudephone verify <run_id> --verify spec.json --no-label   # look, don't write
+```
+
+**Decision records.** Every step also writes one `decision` record to the run
+file:
+- the clickable and scrollable elements of the screen the model last read (the
+  candidates);
+- the call it made, with the element it aimed at resolved from its ref, index or
+  tap point;
+- what the screen did next.
+
+That is V-Droid's training format. Nothing trains on it now; it is logged because
+it cannot be recovered later. A step on an already-listed screen points back
+(`candidates_as_step`) instead of repeating the list. Decision records and a
+`final_screen` record go to the file only, never the event stream.
+
+Verified 2026-09-19:
+- **The six A/B runs recorded that day,** checked read-only: every verdict matched
+  the A/B's own grading. One DeepSeek run *had* reached a screen showing "Screen
+  timeout" before it ran out of steps. The grader could not see that; the
+  `reached_text` check did.
+- **A live DeepSeek run on the Samsung:** checked and labelled `fail` automatically
+  when it ended, with 8 decision records and a final screen 0.13 s old.
 
 Runs contain whatever the tools returned, including SMS, contacts and clipboard
 contents. `artifacts/` is gitignored. `CLAUDEPHONE_RECORD=0` turns it off.

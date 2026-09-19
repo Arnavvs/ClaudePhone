@@ -91,6 +91,39 @@ def print_event(ev: dict) -> None:
         print(c("\n— " + str(ev.get("steps")) + " steps · "
                 + str(ev.get("seconds")) + "s · "
                 + str(u.get("total_tokens", "?")) + " tokens", DIM))
+    elif kind == "verification":
+        print_verification(ev)
+
+
+def print_verification(ev: dict) -> None:
+    """B8: the automatic verdict, one line per check."""
+    v = ev.get("verdict")
+    col = GREEN if v == "pass" else RED if v == "fail" else YELLOW
+    print(c("\n  verified: " + str(v).upper(), col)
+          + c("  (by " + str(ev.get("decided_by")) + ")", DIM))
+    for ch in ev.get("checks") or []:
+        mark = {"pass": c("✓", GREEN), "fail": c("✗", RED)}.get(
+            ch.get("status"), c("?", YELLOW))
+        print("    " + mark + " " + c(json.dumps(ch.get("check"), default=str)[:60], DIM)
+              + "  " + str(ch.get("why"))[:100])
+    j = ev.get("judge")
+    if j:
+        print(c("    judge " + str(j.get("model") or "") + ": " + str(j.get("verdict"))
+                + " - " + str(j.get("why") or j.get("error") or "")[:160], DIM))
+
+
+def _load_spec(a) -> dict:
+    """--verify FILE and/or --expect / --reached, merged into one spec."""
+    spec: dict = {"checks": []}
+    if getattr(a, "verify", ""):
+        with open(a.verify, encoding="utf-8") as fh:
+            spec = json.load(fh)
+        spec.setdefault("checks", [])
+    for rx in getattr(a, "expect", None) or []:
+        spec["checks"].append({"answer": rx})
+    for rx in getattr(a, "reached", None) or []:
+        spec["checks"].append({"reached_text": rx})
+    return spec if spec["checks"] else {}
 
 
 # -- commands ----------------------------------------------------------------
@@ -127,6 +160,8 @@ def cmd_run(a) -> int:
         on_ask_operator=ask_operator,
         helper_model=a.helper_model,
         summarize=a.summarize,
+        verify_spec=_load_spec(a) or None,
+        judge=a.judge,
     )
     goal = " ".join(a.goal)
     failed = False
@@ -135,6 +170,44 @@ def cmd_run(a) -> int:
         if ev.get("type") == "error":
             failed = True
     return 1 if failed else 0
+
+
+def cmd_verify(a) -> int:
+    """Check a recorded run against a task spec and label it (B8)."""
+    from datetime import datetime
+
+    from .harness import recorder, verify
+    from .harness.models import Chat, ModelConfig
+    rid = a.run_id
+    if rid == "latest":
+        ids = recorder.list_runs(limit=1)
+        if not ids:
+            print(c("no runs recorded yet", DIM))
+            return 1
+        rid = ids[0]
+    rows = recorder.load(rid)
+    if not rows:
+        print(c("no such run: " + rid, RED))
+        return 1
+    spec = _load_spec(a)
+    if not spec:
+        print(c("give checks: --verify SPEC.json, --expect REGEX or --reached REGEX", RED))
+        return 2
+    chat = None
+    if a.judge:
+        cfg = ModelConfig.from_env(role="helper")
+        if not cfg.model:
+            cfg = ModelConfig.from_env()
+        chat = Chat(cfg)
+    result = verify.verify(rows, spec, chat=chat)
+    print(c(rid, BOLD))
+    print_verification({"verdict": result["verdict"], "decided_by": result.get("by"),
+                        "checks": result["checks"], "judge": result.get("judge")})
+    if not a.no_label:
+        recorder.label(rid, **dict(verify.label_fields(result, spec),
+                                   labelled_at=datetime.now().astimezone()
+                                   .isoformat(timespec="seconds")))
+    return 0 if result["verdict"] == "pass" else 1
 
 
 def cmd_serve(a) -> int:
@@ -352,7 +425,10 @@ def cmd_runs(a) -> int:
         flag = (c(" " + str(bad) + " failed", RED) if bad else "")
         print(c(rid, CYAN) + c("  " + str(s.get("steps")) + " steps  "
                                + str(s.get("seconds") or "?") + "s  "
-                               + str(s.get("outcome")), DIM) + flag)
+                               + str(s.get("outcome")), DIM) + flag
+              + (c("  " + s["verdict"], GREEN if s["verdict"] == "pass" else
+                   RED if s["verdict"] == "fail" else YELLOW)
+                 if s.get("verdict") else ""))
         print("   " + (s.get("goal") or "")[:90])
     print(c("\n" + str(len(ids)) + (" run" if len(ids) == 1 else " runs")
             + " in " + recorder.RUNS_DIR, DIM))
@@ -544,6 +620,16 @@ def build_parser() -> argparse.ArgumentParser:
                         "free requests left")
     r.add_argument("--summarize", action="store_true",
                    help="after the run, one helper call writes what happened")
+    r.add_argument("--verify", default="",
+                   help="task spec (JSON with 'checks'); the run is checked and "
+                        "labelled automatically when it ends (B8)")
+    r.add_argument("--expect", action="append",
+                   help="shorthand check: the final answer must match this regex")
+    r.add_argument("--reached", action="append",
+                   help="shorthand check: this regex must appear on a screen read")
+    r.add_argument("--judge", action="store_true",
+                   help="if the checks are inconclusive, one helper-model call "
+                        "decides (costs one request)")
     r.add_argument("--max-seconds", type=float, default=900.0,
                    dest="max_seconds")
     r.add_argument("--notes", default="", help="extra operator instructions")
@@ -608,6 +694,19 @@ def build_parser() -> argparse.ArgumentParser:
                         "(each open is a counted read)")
     k.add_argument("--prefix", default="", help="verify only this prefix")
     k.set_defaults(fn=cmd_deeplinks)
+
+    v = sub.add_parser("verify", help="check a recorded run against a task spec "
+                                      "and label it (B8)")
+    v.add_argument("run_id", help="a run id, or 'latest'")
+    v.add_argument("--verify", "--spec", dest="verify", default="",
+                   help="task spec JSON with 'checks'")
+    v.add_argument("--expect", action="append", help="final answer regex")
+    v.add_argument("--reached", action="append", help="screen text regex")
+    v.add_argument("--judge", action="store_true",
+                   help="one helper-model call if the checks are inconclusive")
+    v.add_argument("--no-label", action="store_true", dest="no_label",
+                   help="print the verdict without writing a label")
+    v.set_defaults(fn=cmd_verify)
 
     m = sub.add_parser("mcp", help="serve tools over MCP stdio")
     m.set_defaults(fn=cmd_mcp)
