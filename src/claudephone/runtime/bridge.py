@@ -106,6 +106,10 @@ def _elements_from(rows: list) -> list[Element]:
             selected="*" in flags,
             checked="x" in flags,
             hidden="h" in flags,
+            editable="E" in flags,
+            focused="F" in flags,
+            password="P" in flags,
+            hint="H" in flags,
             window=r.get("w", "") or "",
         ))
     return out
@@ -370,9 +374,18 @@ class Bridge:
     def key(self, name: str) -> bool:
         return bool(self._get("/key?name=" + name).get("ok"))
 
-    def text(self, value: str) -> bool:
+    def text(self, value: str, mode: str = "replace") -> dict:
+        """Set the focused field's text. 0.2.2 also reads it back (B10).
+
+        The whole response, not a bool: `readback`, `matched`, `before` and
+        `field` are what make the result checkable. No transport retry for an
+        append - a request that did land and lost only its reply would append
+        twice.
+        """
         from urllib.parse import quote
-        return bool(self._get("/text?value=" + quote(value)).get("ok"))
+        return self._get("/text?value=" + quote(value, safe="")
+                         + ("&mode=append" if mode == "append" else ""),
+                         _retry=(mode != "append"))
 
 
 _bridge: Optional[Bridge] = None

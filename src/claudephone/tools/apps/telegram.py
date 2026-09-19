@@ -438,22 +438,17 @@ def _tap_send(e):
 
 
 def _type(text: str) -> dict:
-    """`input text` into the focused field.
+    """Type into the focused field, appending, and check it landed (B10).
 
-    `input text` is ASCII-only in practice: anything outside it is dropped by
-    the shell input command without complaint, so non-ASCII is reported rather
-    than silently lost.
+    This used `input text`, which dropped every non-ASCII character without
+    complaint - a Devanagari search, or a message with an emoji that was then
+    SENT with pieces missing. `runtime.text_entry` sets the text through the
+    bridge (any Unicode) and reads the field back; `input text` is only its
+    ASCII fallback. A result with "error" means the field does not hold the
+    text, and callers must not go on to send or search.
     """
-    dropped = [c for c in text if ord(c) > 127]
-    body = "".join(c for c in text if ord(c) <= 127)
-    safe = body.replace("'", "'\\''").replace(" ", "%s")
-    dev.shell(f"input text '{safe}'")
-    res: dict[str, Any] = {"typed": body}
-    if dropped:
-        res["dropped_non_ascii"] = "".join(dropped)
-        res["note"] = ("`input text` cannot type non-ASCII characters; those "
-                       "were dropped. Keep messages ASCII, or install an IME "
-                       "that accepts broadcast input.")
+    from ...runtime import text_entry
+    res: dict[str, Any] = text_entry.enter(text, mode="append")
     return res
 
 
@@ -941,6 +936,8 @@ def register(mcp) -> None:
         _tap(box)
         time.sleep(1.2)
         typed = _type(query)
+        if "error" in typed:
+            return {"query": query, **typed}
         time.sleep(2.8)
 
         posts = False
@@ -1239,6 +1236,9 @@ def register_outbound(mcp) -> None:
         _tap(box)
         time.sleep(1.0)
         typed = _type(text)
+        if "error" in typed:
+            # Never send what the field does not hold (B10).
+            return {"sent": False, **typed}
         time.sleep(1.0)
         send = _find(_read(), "send", exact=True)
         if send is None:
@@ -1310,6 +1310,9 @@ def register_outbound(mcp) -> None:
         _tap(box)
         time.sleep(1.0)
         typed = _type(text)
+        if "error" in typed:
+            # Never send what the field does not hold (B10).
+            return {"sent": False, **typed}
         time.sleep(1.0)
         send = _find(_read(), "send", exact=True)
         if send is None:
@@ -1361,6 +1364,8 @@ def register_search_in_chat(mcp) -> None:
         _tap(box)
         time.sleep(1.0)
         typed = _type(query)
+        if "error" in typed:
+            return {"query": query, **typed}
         time.sleep(2.5)
         _key("KEYCODE_ENTER", 2.5)
 

@@ -343,9 +343,14 @@ class BridgeServer extends Thread {
             case "/key":
                 r.put("ok", svc.globalAction(q.get("name")));
                 break;
-            case "/text":
-                r.put("ok", svc.setText(q.get("value")));
+            case "/text": {
+                JSONObject t = svc.setText(q.get("value"), "append".equals(q.get("mode")));
+                for (java.util.Iterator<String> it = t.keys(); it.hasNext(); ) {
+                    String k = it.next();
+                    r.put(k, t.get(k));
+                }
                 break;
+            }
             default:
                 r.put("error", "no such path: " + path);
                 r.put("_not_found", true);
@@ -495,6 +500,11 @@ class BridgeServer extends Thread {
             if (n.isSelected())   f.append("*");
             if (n.isChecked())    f.append("x");
             if (!n.isVisibleToUser()) f.append("h");
+            if (n.isEditable())   f.append("E");
+            if (n.isFocused())    f.append("F");
+            if (n.isPassword())   f.append("P");
+            // The text above is only the field's hint ("Search"), not content.
+            if (android.os.Build.VERSION.SDK_INT >= 26 && n.isShowingHintText()) f.append("H");
             if (f.length() > 0) e.put("f", f.toString());
             if (tag != null) {
                 e.put("w", tag.get("w"));

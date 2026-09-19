@@ -4,11 +4,15 @@ import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.graphics.Path;
 import android.graphics.Rect;
+import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
+
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -43,7 +47,7 @@ public class BridgeService extends AccessibilityService {
     public static final String TAG = "ClaudePhoneBridge";
     public static final int PORT = 8766;
     /** Reported by /health so a client can tell a hardened build from v0.1. */
-    public static final String VERSION = "0.2.1";   // 0.2.1: per-request text cap (tmax)
+    public static final String VERSION = "0.2.2";   // 0.2.2: /text reads the field back; E/F/P/H tree flags
 
     /** Bumped on every content change; /changed long-polls against it. */
     public static final AtomicInteger CHANGES = new AtomicInteger(0);
@@ -249,17 +253,74 @@ public class BridgeService extends AccessibilityService {
         return performGlobalAction(a);
     }
 
-    /** Type into the focused editable node. */
-    public boolean setText(String text) {
-        AccessibilityNodeInfo r = root();
-        if (r == null) return false;
-        AccessibilityNodeInfo focused =
-                r.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-        if (focused == null) return false;
-        Bundle args = new Bundle();
-        args.putCharSequence(
-                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                text == null ? "" : text);
-        return focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
+    /** The field's own text: "" while it is only showing its hint. */
+    static String fieldText(AccessibilityNodeInfo n) {
+        if (Build.VERSION.SDK_INT >= 26 && n.isShowingHintText()) return "";
+        CharSequence t = n.getText();
+        return t == null ? "" : t.toString();
+    }
+
+    /**
+     * Set the input-focused field's text, then READ IT BACK (B10).
+     *
+     * performAction(ACTION_SET_TEXT) can return true and change nothing - a
+     * residual focus node, an app that rejects programmatic text - so "ok" is
+     * decided by what the field holds afterwards, re-read from the live node,
+     * not by the action's return value. Unicode goes through untouched, which
+     * `adb shell input text` cannot do.
+     */
+    public JSONObject setText(String text, boolean append) {
+        JSONObject r = new JSONObject();
+        try {
+            r.put("channel", "set_text");
+            r.put("ok", false);
+            AccessibilityNodeInfo root = root();
+            if (root == null) { r.put("error", "no active window"); return r; }
+            AccessibilityNodeInfo f = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+            if (f == null) {
+                r.put("error", "no input-focused field; tap the field first");
+                return r;
+            }
+            JSONObject field = new JSONObject();
+            String rid = f.getViewIdResourceName();
+            if (rid != null) field.put("id", rid.substring(rid.indexOf('/') + 1));
+            CharSequence cls = f.getClassName();
+            if (cls != null) field.put("cls", cls.toString()
+                    .substring(cls.toString().lastIndexOf('.') + 1));
+            CharSequence pkg = f.getPackageName();
+            if (pkg != null) field.put("pkg", pkg.toString());
+            field.put("editable", f.isEditable());
+            field.put("password", f.isPassword());
+            field.put("visible", f.isVisibleToUser());
+            r.put("field", field);
+            if (!f.isEditable()) {
+                r.put("error", "the focused node is not an editable field");
+                return r;
+            }
+            String before = fieldText(f);
+            String want = (append ? before : "") + (text == null ? "" : text);
+            Bundle args = new Bundle();
+            args.putCharSequence(
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, want);
+            boolean acted = f.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
+            r.put("acted", acted);
+            // Apps apply text asynchronously; give the node up to 0.8 s to hold it.
+            String got = fieldText(f);
+            long deadline = System.currentTimeMillis() + 800;
+            while (!want.equals(got) && System.currentTimeMillis() < deadline) {
+                try { Thread.sleep(60); } catch (InterruptedException e) { break; }
+                f.refresh();
+                got = fieldText(f);
+            }
+            r.put("before", before);
+            r.put("readback", got);
+            boolean matched = want.equals(got);
+            r.put("matched", matched);
+            // A password field reads back masked; it cannot be verified here.
+            r.put("ok", acted && (matched || f.isPassword()));
+        } catch (JSONException e) {
+            Log.w(TAG, "setText", e);
+        }
+        return r;
     }
 }

@@ -204,9 +204,15 @@ def register(mcp) -> None:
         return out
 
     @mcp.tool(
-        description="Type text into the focused field. Tap the field first."
+        description=(
+            "Put text in the focused field (tap the field first) and check that "
+            "the field now holds it. Replaces what is there; mode='append' adds "
+            "to it. Any language, emoji and symbols work. The result says which "
+            "channel typed it and whether it was verified; an error means the "
+            "field does NOT hold your text."
+        )
     )
-    def text_input(text: str) -> dict:
+    def text_input(text: str, mode: str = "replace") -> dict:
         from ..policy import reads
         els, pkg = _screen_now()
         refused = _composer_refusal(els, pkg, "typing")
@@ -217,9 +223,10 @@ def register(mcp) -> None:
             gate = reads.acquire("search", "ig", target=text[:60])
             if not gate.allowed:
                 return reads.refusal(gate)
-        safe = text.replace("'", "'\\''").replace(" ", "%s")
-        dev.shell(f"input text '{safe}'")
-        out = {"typed": text}
+        from ..runtime import text_entry
+        out = text_entry.enter(text, mode=mode)
+        if "error" in out:
+            return out                  # the field does not hold it: not counted
         if gate is not None:
             reads.commit(gate, target=text[:60])
             out["read"] = gate.to_dict()

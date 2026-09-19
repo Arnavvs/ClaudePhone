@@ -252,14 +252,29 @@ def test_typing_into_a_comment_box_is_refused(monkeypatch):
     assert r["write"]["rule"] == "any.composer" and shell == []
     assert "error" not in reg.call("press_key", {"key": "back"})
     wr.configure(allow_rules={"any.composer"})
+    typed = _fake_entry(monkeypatch)
     assert reg.call("text_input", {"text": "nice"}).get("typed") == "nice"
+    assert typed == ["nice"]
+
+
+def _fake_entry(monkeypatch):
+    """Text entry that always lands (B10's read-back is tested in test_text_entry)."""
+    from claudephone.runtime import text_entry
+    typed = []
+
+    def enter(text, mode="replace", serial=""):
+        typed.append(text)
+        return {"typed": text, "channel": "fake", "verified": True}
+    monkeypatch.setattr(text_entry, "enter", enter)
+    return typed
 
 
 def test_typing_an_instagram_search_counts_a_search(monkeypatch, temp_ledger):
     box = el("action_bar_search_edit_text", text="Search", cls="EditText", bounds=(0, 100, 1080, 200))
     _, shell = _env(monkeypatch, [box])
+    typed = _fake_entry(monkeypatch)
     r = _registry().call("text_input", {"text": "delhi food"})
-    assert r["read"]["action"] == "search" and len(shell) == 1
+    assert r["read"]["action"] == "search" and typed == ["delhi food"]
     assert [tuple(x)[2] for x in rows(temp_ledger, "search")] == ["delhi food"]
 
 

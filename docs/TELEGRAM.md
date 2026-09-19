@@ -90,9 +90,12 @@ half. A handle from a search hit is a *lead*, not an identifier — every hit
 carries `truncated` and its `raw` label, and `tg_info` resolves the real one off
 the profile screen's invite link.
 
-**`input text` is ASCII-only.** Non-ASCII is dropped by the shell input command
-without complaint, so `tg_send`/`tg_reply` report what was dropped rather than
-pretending the ✅ went through. Telegram also auto-capitalises the first
+**Typing goes through the bridge, and is read back (B10).** `input text` is
+ASCII-only - with Devanagari it crashes rather than types - and this module used
+to strip non-ASCII before typing, so a message could be sent with pieces missing.
+`_type` now uses `runtime/text_entry.py`: the bridge sets any Unicode and the
+field is read back. If the field does not hold the text, `tg_send`/`tg_reply`
+stop **before** Send, and searches stop before Enter. Telegram also auto-capitalises the first
 character of a sent message, which is why send verification compares
 case-insensitively.
 

@@ -541,6 +541,53 @@ between two tool results breaks the tool-calling format, and the B4 code also
 broke out of the batch on a warning, leaving the model's remaining calls with no
 result at all - reproduced on the old code: three calls, two results.
 
+### Text entry that proves it worked (B10)
+
+`text_input` was `adb shell input text`, sent and forgotten. Measured on both
+phones on 2026-09-19, that command does not drop non-ASCII quietly: with
+Devanagari it throws a `NullPointerException` inside Android's
+`InputShellCommand` and types nothing. That rules out Hinglish queries, ₹ and
+emoji. Telegram's helper avoided the crash by stripping non-ASCII first, so a
+message could go out with pieces missing.
+
+`runtime/text_entry.py` now puts text in a field in three stages, and every result
+names the channel used:
+
+1. **The bridge's `/text`** (ACTION_SET_TEXT on the input-focused field), which
+   takes any Unicode. Bridge 0.2.2 re-reads the live node for up to 0.8 s and
+   returns what the field holds.
+2. **An independent read-back** from a fresh tree read: the focused editable
+   field must hold the text too. `performAction` can return true and change
+   nothing, as with a residual focus node, so neither the return value nor one
+   reading is trusted alone. A field showing only its hint reads as empty (the
+   `H` flag).
+3. **`adb input text` as a fallback, for plain ASCII only.** It runs when the
+   bridge is unreachable or the app ignored ACTION_SET_TEXT, and it clears the
+   field first when replacing. Non-ASCII with no working bridge is refused
+   before anything is typed.
+
+A mismatch is an error that says what the field holds. A password field reads
+back masked, so it is reported `verified: null`, never `true`. `text_input` and
+Telegram's `_type` both use this path. Telegram's send and reply stop before
+Send when the text did not take.
+
+**Verified 2026-09-19** on both phones, in the Settings search field:
+
+| input | result | time |
+|---|---|---|
+| ASCII | verified by node and tree | 0.35-0.7 s |
+| `दिल्ली food ₹99 😋` | verified by node and tree | 0.35-0.7 s |
+| append | verified | — |
+| clear | verified | — |
+| bridge off, ASCII | typed by `adb` and verified | — |
+| bridge off, Devanagari | refused up front | — |
+| old path, Devanagari | `NullPointerException`; the field stayed empty | — |
+
+**Not done: the IME.** A zero-UI keyboard in the bridge APK, the second half of
+the plan, would cover apps that ignore ACTION_SET_TEXT. Using it means switching
+the phone's system keyboard, which is a person's decision. No app met so far has
+needed it.
+
 ### Step capsules, `remember` and `recall` (B7)
 
 Until B7, a result older than six steps was cut to its first 220 characters. On

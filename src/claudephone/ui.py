@@ -63,6 +63,12 @@ class Element:
     # target. `window`: set for elements from a window other than the active one.
     hidden: bool = False
     window: str = ""
+    # Bridge 0.2.2 (B10): an editable field, the one holding input focus, and a
+    # password field - so text entry can find the field it typed into.
+    editable: bool = False
+    focused: bool = False
+    password: bool = False
+    hint: bool = False           # `text` is the field's hint, not its content
 
     @property
     def center(self) -> tuple[int, int]:
@@ -89,6 +95,10 @@ class Element:
             "*" if self.selected else "",
             "x" if self.checked else "",
             "h" if self.hidden else "",
+            "E" if self.editable else "",
+            "F" if self.focused else "",
+            "P" if self.password else "",
+            "H" if self.hint else "",
         ])
         if flags:
             d["f"] = flags

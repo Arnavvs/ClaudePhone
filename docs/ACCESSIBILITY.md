@@ -224,7 +224,12 @@ the same write `android/build.sh install` makes. `bridge_status` reports it as
 - **Screen off:** still serves while dozing, and after waking.
 - **Footprint:** 45 MB RSS, 0% CPU idle, standby bucket 10 (active).
 - **Text via `/text` works for Unicode** (`हिंदी ₹50 ✓` typed and read back), which
-  `adb input text` cannot do.
+  `adb input text` cannot do. Since 0.2.2 (B10) the bridge re-reads the field
+  itself and says whether it holds the text; `/tree` also flags editable (`E`),
+  input-focused (`F`), password (`P`) and hint-only (`H`) fields. Measured
+  2026-09-19 on both phones: `adb input text` with Devanagari does not drop
+  characters, it **crashes** inside `InputShellCommand.sendText`
+  (`NullPointerException`) and types nothing.
 - **Events:** `/changed` woke 0.07–0.13 s after a swipe. **Beware:** the first change
   event arrives *mid-animation*. The Settings search icon read at y=659 / 410 / 471 at
   the first event and settled at y=209, so tapping coordinates read at that moment
@@ -256,7 +261,7 @@ Every endpoint except `/health` needs `X-Bridge-Token`.
 | `GET /tap?x=&y=&ms=` | dispatch a tap; returns `lands_on` |
 | `GET /swipe?x1=&y1=&x2=&y2=&ms=` | dispatch a swipe |
 | `GET /key?name=` | back, home, recents, notifications, quicksettings, lock |
-| `GET /text?value=` | set text on the focused input |
+| `GET /text?value=[&mode=append]` | set the input-focused field's text, then re-read it; returns `readback`, `matched`, `before`, `field` (0.2.2) |
 
 `/tree` emits the **same element shape** the Python side already consumes from
 u2 — `{"i", "id", "anchor", "text", "desc", "cls", "c":[x,y], "b":[l,t,r,b],
