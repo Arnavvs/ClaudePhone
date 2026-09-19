@@ -95,9 +95,15 @@ ASCII-only - with Devanagari it crashes rather than types - and this module used
 to strip non-ASCII before typing, so a message could be sent with pieces missing.
 `_type` now uses `runtime/text_entry.py`: the bridge sets any Unicode and the
 field is read back. If the field does not hold the text, `tg_send`/`tg_reply`
-stop **before** Send, and searches stop before Enter. Telegram also auto-capitalises the first
-character of a sent message, which is why send verification compares
-case-insensitively.
+stop **before** Send, and searches stop before Enter. Verified 2026-09-19 on
+the realme: `tg_search("दिल्ली")` returned matching Devanagari results.
+
+Telegram also auto-capitalises the first character of a sent message, which is
+why send verification compares case-insensitively.
+
+**The "Search Chats" bar collapses when the chat list is scrolled down.** That is
+how the list is left after backing out of a chat, so `tg_search` pulls the list
+to the top once before giving up on the search box.
 
 ## Speed
 
