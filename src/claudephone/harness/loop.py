@@ -48,6 +48,25 @@ from .. import state
 KEEP_FULL_RESULTS = 6
 # Only for a result that somehow has no capsule.
 CLIP_TO = 220
+# B11: corrections in a row for tool calls that could not be read, then stop.
+MAX_MALFORMED = 3
+CALL_EXAMPLE = '```json' + chr(10) + '{"tool": "ui_dump", "args": {"limit": 40}}' + chr(10) + '```'
+
+
+def correction(reason: str, native: bool) -> str:
+    """What the model is told after a call that could not be read (B11).
+
+    It does NOT repeat the broken output back. Shown its own mistake, a small
+    model tends to copy it; shown only the right shape, it usually recovers.
+    """
+    how = ("Call the tool through function calling, or reply with exactly one "
+           "fenced block like this:" if native else
+           "Reply with exactly one fenced block like this, and nothing else:")
+    return ("Your last reply tried to call a tool, but it could not be read: "
+            + reason + ". " + how + chr(10) + CALL_EXAMPLE + chr(10)
+            + "\"tool\" is the tool's name and \"args\" is an object of its "
+            "arguments, with double quotes. If you are finished, answer in "
+            "plain prose with no JSON at all.")
 
 
 @dataclass
@@ -408,6 +427,7 @@ class Agent:
         steps = 0
         stag = self.stagnation
         dlog = decisions.DecisionLog()
+        malformed = 0
         last_thought = ""
         while True:
             tokens = self.chat.total_usage.get("total_tokens", 0)
@@ -455,6 +475,25 @@ class Agent:
                 yield {"type": "thought", "content": reply.content,
                        "ms": reply.ms}
 
+            if not reply.tool_calls and getattr(reply, "malformed", ""):
+                # B11. A call that could not be read is not an answer. Correct
+                # it without echoing it, a bounded number of times.
+                malformed += 1
+                yield {"type": "note", "step": steps, "reason": "malformed_call",
+                       "attempt": malformed, "message": reply.malformed}
+                if malformed >= MAX_MALFORMED:
+                    yield {"type": "final", "content": "",
+                           "last_thought": last_thought[:600],
+                           "stopped_by": "malformed_calls (%d in a row)" % malformed,
+                           "steps": steps,
+                           "seconds": round(time.time() - started, 1),
+                           "usage": dict(self.chat.total_usage)}
+                    return
+                self.messages.append({"role": "user", "content":
+                                      correction(reply.malformed, native)})
+                continue
+            malformed = 0 if reply.tool_calls else malformed
+
             if not reply.tool_calls:
                 yield {"type": "final", "content": reply.content,
                        "steps": steps,
@@ -487,6 +526,12 @@ class Agent:
                        "args": args}
 
                 ok, why = self.policy.check(self.reg, name, args)
+                if ok and isinstance(args, dict) and "_unparsed" in args:
+                    # Native arguments that were not JSON (B11): say so, with
+                    # the right shape, rather than handing the tool a string.
+                    ok, why = False, ("the arguments were not valid JSON; send "
+                                      "them again as an object, e.g. "
+                                      '{"limit": 40}')
                 fp_before = stag.before() if stag else ""
                 before = history.snapshot(state.last)
                 seen = dlog.before()

@@ -230,6 +230,11 @@ When the fallback fires, the system prompt is **rebuilt** to teach the json
 protocol and a `note` event is emitted. In json mode the loop enforces one call
 per turn, because small models lose track when asked to batch.
 
+A reply that tried to call a tool but cannot be parsed gets up to three short
+corrections, which never echo the broken text. The run then stops with
+`stopped_by="malformed_calls"` instead of treating the broken call as the answer
+(B11; ARCHITECTURE has the detail).
+
 ---
 
 ## Controlling cost

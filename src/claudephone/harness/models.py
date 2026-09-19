@@ -97,6 +97,9 @@ class Reply:
     finish_reason: str = ""
     model: str = ""
     ms: int = 0
+    # B11: set when the reply tried to call a tool and could not be read -
+    # the reason, for the correction. Empty when the reply is a real answer.
+    malformed: str = ""
 
 
 @dataclass
@@ -216,6 +219,42 @@ def parse_json_tool_call(text: str) -> tuple[str, list[dict]]:
     return text.strip(), []
 
 
+_ATTEMPT_KEYS = re.compile(r"""["']?(tool|name|function)["']?\s*[:=]""", re.I)
+_ATTEMPT_ARGS = re.compile(r"""["']?(args|arguments|parameters)["']?\s*[:=]""", re.I)
+_ATTEMPT_TAGS = re.compile(r"<\s*(tool_call|function|tool)\b", re.I)
+
+
+def diagnose_attempt(text: str) -> str:
+    """Why `text` looks like a tool call that could not be read, or "" (B11).
+
+    Called only when no call was parsed. A reply that merely *contains* JSON is
+    an answer, not a failed call, so the test is narrow: a fenced json block, a
+    tool-call tag, or an object naming a tool alongside its arguments.
+    """
+    t = text or ""
+    fenced = re.search(r"```\s*json", t, re.I)
+    tagged = _ATTEMPT_TAGS.search(t)
+    named = bool(_ATTEMPT_KEYS.search(t)) and bool(_ATTEMPT_ARGS.search(t))
+    if not (fenced or tagged or ("{" in t and named)):
+        return ""
+    objs = [raw for _, _, raw in _balanced_objects(t)]
+    parsed = []
+    for raw in objs:
+        try:
+            parsed.append(json.loads(raw))
+        except json.JSONDecodeError:
+            pass
+    if parsed and any(isinstance(o, dict) for o in parsed):
+        return 'the JSON object has no "tool" name'
+    if not objs:
+        if tagged and not fenced and "{" not in t:
+            return "a tool-call tag with no JSON object in it"
+        return "the braces are unbalanced"
+    if "'" in t and '"' not in t.replace('\\"', ""):
+        return "it uses single quotes; JSON needs double quotes"
+    return "it is not valid JSON (check quotes, commas and braces)"
+
+
 class Chat:
     """One conversation endpoint. Stateless - the loop owns the messages."""
 
@@ -321,8 +360,12 @@ class Chat:
                 args = {"_unparsed": raw}
             calls.append({"id": tc.get("id") or "call", "name": fn.get("name"),
                           "args": args})
+        malformed = ""
         if not calls and content:
+            raw_content = content
             content, calls = parse_json_tool_call(content)
+            if not calls:
+                malformed = diagnose_attempt(raw_content)
 
         usage = data.get("usage") or {}
         for k, v in usage.items():
@@ -335,7 +378,7 @@ class Chat:
         return Reply(content=content, tool_calls=calls, usage=usage,
                      finish_reason=choice.get("finish_reason") or "",
                      model=data.get("model") or self.cfg.model,
-                     ms=int((time.time() - t0) * 1000))
+                     ms=int((time.time() - t0) * 1000), malformed=malformed)
 
     @property
     def cost(self) -> float:

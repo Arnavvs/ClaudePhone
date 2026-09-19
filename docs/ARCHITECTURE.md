@@ -345,6 +345,23 @@ the model simply refusing to act.
 In json mode the loop enforces one call per turn, because small models reliably
 lose track when asked to batch.
 
+**A call that cannot be read is corrected, not taken as the answer (B11).**
+Before, a json-mode reply the parser could not read - single quotes, a trailing
+comma, an unbalanced brace, `function`/`parameters` instead of `tool`/`args`, a
+bare `<tool_call>` tag - fell through as prose and ended the run as if it were
+the answer. Now `diagnose_attempt` recognises the attempt and names what is
+wrong ("it uses single quotes; JSON needs double quotes"). The loop sends a
+short correction with one correct example and **does not echo the broken
+reply**: shown its own mistake, a small model tends to copy it. After three in a
+row the run stops with `stopped_by="malformed_calls"`, and a good call resets
+the count. Native tool calls whose arguments are not JSON get the same kind of
+error back instead of reaching the tool as a string.
+
+The test is deliberately narrow. It needs a json fence, a tool-call tag, or an
+object naming a tool alongside its arguments, so an answer that merely contains
+JSON is still an answer. Run against every final answer recorded so far (728 in
+909 runs), it flagged none.
+
 ---
 
 ## Delegate vs proxy
