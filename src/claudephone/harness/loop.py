@@ -7,9 +7,11 @@ CLI prints these, and the HTTP server streams the same objects as NDJSON.
 Three things here are not standard loop boilerplate and are worth knowing about:
 
 * **History compaction.** Screen dumps are large and repetitive; ten of them in
-  a row is mostly the same nav bar. Tool results older than `keep_full` steps
-  are clipped to a stub. Without this a 30-step run on a cheap model either
-  blows the context window or costs several times what it should.
+  a row is mostly the same nav bar. Tool results older than `KEEP_FULL_RESULTS`
+  steps become one-line step capsules (`harness/history.py`, B7) - what was
+  called and what the screen did, built without a model call. Facts the model
+  pins with `remember` stay in the system message, and `recall` reads any old
+  result back from the run's own record.
 * **A permission gate** sits in front of every call, so a tool marked dangerous
   (uninstalling apps, sending messages, factory-reset-adjacent shell) can be
   set to ask, allow or deny without touching tool code.
@@ -35,14 +37,16 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator, Optional
 
-from . import handoff, recorder
+from . import handoff, history, recorder
 from .models import Chat, ModelError, is_free_model, key_status
 from .prompt import build_system
 from .registry import ToolRegistry
 from .stagnation import Stagnation
+from .. import state
 
-# Tool results this many steps back get clipped to a stub.
+# Tool results this many steps back become a one-line capsule (B7).
 KEEP_FULL_RESULTS = 6
+# Only for a result that somehow has no capsule.
 CLIP_TO = 220
 
 
@@ -198,20 +202,36 @@ class Agent:
         )
 
     def _compact(self) -> None:
-        """Clip old tool results in place. Keeps the shape of history intact."""
+        """Turn old tool results into capsules in place (B7).
+
+        Finds results by the private `_step` key rather than by role: in json
+        mode a result is a user message, and the role test this replaced never
+        compacted a json-mode run at all.
+        """
         seen = 0
         for msg in reversed(self.messages):
-            if msg.get("role") != "tool":
+            if "_step" not in msg:
                 continue
             seen += 1
             if seen > KEEP_FULL_RESULTS and not msg.get("_clipped"):
-                msg["content"] = _clip(msg["content"])
+                cap = msg.get("_capsule")
+                if cap and msg.get("role") == "tool":
+                    msg["content"] = cap
+                elif cap:
+                    msg["content"] = ("Result of " + str(msg.get("_tool"))
+                                      + " (older step, compacted):\n" + cap)
+                else:
+                    msg["content"] = _clip(msg["content"])
                 msg["_clipped"] = True
 
     def _wire_messages(self) -> list[dict]:
-        """History minus our private bookkeeping keys."""
-        return [{k: v for k, v in m.items() if not k.startswith("_")}
-                for m in self.messages]
+        """History minus our private bookkeeping keys, plus the saved notes."""
+        out = [{k: v for k, v in m.items() if not k.startswith("_")}
+               for m in self.messages]
+        notes = history.current.notes_block()
+        if notes and out and out[0].get("role") == "system":
+            out[0]["content"] = out[0]["content"] + "\n\n" + notes
+        return out
 
     # -- the loop ------------------------------------------------------------
 
@@ -228,6 +248,7 @@ class Agent:
         the stubs the conversation ends up holding.
         """
         rec = recorder.start(goal, self)
+        history.current.reset(rec.path if rec is not None else "")
         handoff.configure(ask=self.on_ask_operator)
         from ..policy import writes as wr
         wr.configure(mode=self.policy.mode, writes=self.policy.writes,
@@ -235,7 +256,9 @@ class Agent:
                      run_id=rec.run_id if rec is not None else "",
                      allow_uncounted_reads=self.policy.allow_uncounted_reads)
         if rec is None:
-            yield from self._accounted(goal)
+            for ev in self._accounted(goal):
+                history.current.event(ev)
+                yield ev
             return
 
         outcome = "abandoned"
@@ -247,6 +270,7 @@ class Agent:
                     # CLI can print it and a streaming client can reference it.
                     ev = dict(ev, run_id=rec.run_id, run_path=rec.path)
                 rec.event(ev)
+                history.current.event(ev)
                 if kind == "final":
                     outcome = ev.get("stopped_by") or "completed"
                 elif kind == "error":
@@ -430,8 +454,12 @@ class Agent:
 
                 ok, why = self.policy.check(self.reg, name, args)
                 fp_before = stag.before() if stag else ""
+                before = history.snapshot(state.last)
                 result = ({"error": "blocked: " + why} if not ok
                           else self.reg.call(name, args))
+                cap = history.capsule(steps, name, args, result, before,
+                                      history.snapshot(state.last),
+                                      time.time(), started)
 
                 yield {"type": "tool_result", "step": steps, "tool": name,
                        "ok": "error" not in result,
@@ -467,11 +495,14 @@ class Agent:
                 if native:
                     self.messages.append({"role": "tool",
                                           "tool_call_id": call["id"],
-                                          "name": name, "content": payload})
+                                          "name": name, "content": payload,
+                                          "_step": steps, "_tool": name,
+                                          "_capsule": cap})
                 else:
                     self.messages.append({
                         "role": "user",
-                        "content": "Result of " + name + ":\n" + payload})
+                        "content": "Result of " + name + ":\n" + payload,
+                        "_step": steps, "_tool": name, "_capsule": cap})
 
                 if advice:
                     yield {"type": "note", "step": steps,

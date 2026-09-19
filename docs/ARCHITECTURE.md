@@ -216,10 +216,10 @@ Three parts are not boilerplate:
 
 **History compaction.** Screen dumps are large and highly repetitive — ten in a
 row are mostly the same nav bar. Tool results older than `KEEP_FULL_RESULTS`
-(6) are clipped in place to a stub. Without this, a 30-step run on a cheap model
-either overruns the context window or costs several times what it should. The
-message *shape* is preserved, so the model still sees that a call happened and
-what it was.
+(6) become one-line **step capsules** (below). Without this, a 30-step run on a
+cheap model either overruns the context window or costs several times what it
+should. The message *shape* is preserved, so the model still sees that a call
+happened and what it was.
 
 **Budgets are enforced, not suggested.** Steps, wall-clock and cumulative tokens
 each terminate the run, and the reason is reported in the `final` event rather
@@ -239,8 +239,8 @@ Two details are the whole point of recording *here*:
 
 - **Before compaction.** The event is recorded as yielded, so the file keeps the
   full screen dump the model was looking at when it chose. The conversation does
-  not — after six steps that result is a 220-character stub. The screen is the
-  input half of every training example; the stub is useless.
+  not — after six steps that result is a one-line capsule. The screen is the
+  input half of every training example; the capsule is not enough for that.
 - **It cannot break a run.** Every filesystem call is guarded, a failure latches
   recording off for the rest of the run, and `start()` returns `None` on an
   unwritable directory so the run proceeds unrecorded rather than failing. An
@@ -483,6 +483,44 @@ are held until every tool call in the model's turn has its result. A user messag
 between two tool results breaks the tool-calling format, and the B4 code also
 broke out of the batch on a warning, leaving the model's remaining calls with no
 result at all - reproduced on the old code: three calls, two results.
+
+### Step capsules, `remember` and `recall` (B7)
+
+Until B7, a result older than six steps was cut to its first 220 characters. On
+a profile pass the follower count read at step 3 was gone by step 10: the model
+either re-read the screen - a counted read on Instagram - or guessed. And the
+cut was blind: 220 characters of a screen dump are mostly JSON keys.
+
+Now an aged-out result becomes one line, built by `harness/history.py` from
+what the loop already knows - the call, the screen fingerprint and labels
+before and after - with no model call:
+
+    T+00:03 #4 ui_dump(limit=40) -> content changed (com.android.settings);
+    appeared: 'Digital Wellbeing & parental controls', ... +3 more
+    | full result: recall(steps=[4])
+
+- **Neutral wording.** A capsule says what was observed - `content changed`,
+  `same items, positions moved`, `screen unchanged`, `no screen read`,
+  `returned an error: ...` - never "successfully", "failed" or "navigated to". A
+  verdict in history gets believed later, even when it was wrong.
+- **`remember(key, value)`** pins a fact for the whole run. Notes ride in the
+  system message on every call and are never compacted. A note that reads like
+  a verdict is kept, with a hint to record what was seen instead.
+- **`recall(steps=[n])`** returns step n's full result from the run's own JSONL;
+  **`recall(query=...)`** searches every earlier result and thought. Recall
+  never finds its own earlier results. With recording off, it reads an
+  in-memory copy.
+- **JSON-mode runs are compacted now.** Results were found by `role == "tool"`,
+  but in json mode a result is a user message, so a json-mode run was never
+  compacted at all. Results are now marked by step, whatever the convention.
+- `remember` and `recall` neither advance nor reset the stagnation idle count:
+  pinning three notes is not "the screen has not changed in three steps".
+
+Verified 2026-09-19 on both phones (Settings, scripted model: no model quota,
+no ledger reads). Six old results became capsules naming what each scroll brought
+into view. The pinned note stayed in the system message. `recall(steps=[1])`
+returned step 1's 3.7-4 KB result. `recall(query=...)` found the label at steps
+1 and 10, where the list had been scrolled back.
 
 ### Handing back to a person, and the screens that are not ours to clear (B3)
 

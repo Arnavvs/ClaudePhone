@@ -37,7 +37,12 @@ from .. import state
 # to follow.
 _READ_ONLY = {"ui_dump", "look", "find_element", "extract_fields", "foreground_app",
               "bridge_status", "ledger_status", "list_tool_packs", "find_tool",
-              "screen_signature"}
+              "screen_signature", "remember", "recall"}
+
+# Tools that do not touch the screen at all. They neither advance nor reset the
+# idle count: pinning three notes on a profile is not "the screen has not
+# changed in three steps".
+_OFF_SCREEN = {"remember", "recall"}
 
 
 def _key(tool: str, args: dict) -> str:
@@ -94,7 +99,8 @@ class Stagnation:
         # screen is the case this feature exists for; measured live on the
         # Samsung, treating "unknown" as "changed" let 25 identical swipes run to
         # max_steps without a word.
-        self.idle = 0 if changed else self.idle + 1
+        if tool not in _OFF_SCREEN:
+            self.idle = 0 if changed else self.idle + 1
         if changed:
             self.repeats.pop(key, None)
         elif tool in _READ_ONLY and key != self.last_key:

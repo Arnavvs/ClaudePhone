@@ -18,8 +18,8 @@ generator, so hooking it there captures all of them for free and cannot be
 forgotten when a fourth entry point is added.
 
 It records the event **as yielded**, before `_compact()` has touched anything.
-That matters more than it looks: compaction clips tool results older than six
-steps down to a 220-character stub, so by the end of a 30-step run the
+That matters more than it looks: compaction turns tool results older than six
+steps into a one-line capsule (B7), so by the end of a 30-step run the
 conversation no longer contains the screens the model was actually looking at
 when it chose. Those screens are the input half of every training example. The
 recorder keeps them whole.

@@ -47,6 +47,8 @@ Loaded by default. Enough to orient on any screen and find more tools.
 | `open_and_wait` ! | `(package, quiet_s?, timeout_s?, limit?)` | Open an app and wait until it has finished loading, returning what is on screen when it settles |
 | `press_and_see` ! | `(key?, timeout_s?)` | Press a hardware key and report what changed |
 | `open_link` | `(url, wait_s?)` | Open a screen with a device-verified deep link; checks the right app came to the front, refuses a locked phone, counts the read |
+| `remember` | `(key, value)` | Pin a fact for the whole run; notes stay in the system message and are never compacted. `value=''` clears one |
+| `recall` | `(query? , steps?)` | Read back this run's own record: `steps=[n]` gives step n's full result, `query` searches earlier results and thoughts |
 | `request_human` | `(reason, detail?)` | Stop the run and hand the phone to a person - the only correct response to a login, checkpoint, 2FA or CAPTCHA screen |
 | `ask_operator` | `(question, timeout_s?)` | Ask the operator one question and wait; the run resumes with the answer, or stops if nobody replies |
 | `press_key` | `(key)` | Press a hardware/navigation key: back, home, enter, recents, wake, sleep, delete, search, volume_up/down. Enter is refused while a comment / message box is on screen |

@@ -237,7 +237,7 @@ per turn, because small models lose track when asked to batch.
 - **Packs.** Only `core` loads by default: ~1,600 tokens of schema per turn
   instead of ~12,200. This is the single biggest lever —
   [measured](BENCHMARKS.md#2-tool-schema-overhead).
-- **Compaction.** Tool results older than 6 steps are clipped automatically.
+- **Compaction.** Tool results older than 6 steps become one-line step capsules; the model pins what it needs with `remember` and reads old results back with `recall` (ARCHITECTURE, B7).
 - **Budgets.** `--max-steps` (default 30), `Budget.max_tokens` (250k),
   **`--max-usd`** (default $0.25, decider and helper together, from the
   `usage.cost` OpenRouter returns on every completion) and **`--free-reserve`**
