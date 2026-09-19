@@ -219,7 +219,9 @@ def register(mcp) -> None:
         if refused:
             return refused
         gate = None
-        if reads.search_box_on_screen(els, pkg):
+        # Clearing the box is not a search. Found live on IG 447: a clean-up
+        # text_input("") wrote a `search` row with an empty target.
+        if (text or "").strip() and reads.search_box_on_screen(els, pkg):
             gate = reads.acquire("search", "ig", target=text[:60])
             if not gate.allowed:
                 return reads.refusal(gate)

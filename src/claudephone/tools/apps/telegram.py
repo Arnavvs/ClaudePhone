@@ -930,6 +930,13 @@ def register(mcp) -> None:
                     "foreground": dev.foreground()}
         box = _find(_read(), "search chats")
         if box is None:
+            # The "Search Chats" bar collapses when the chat list is scrolled
+            # down - which is how the list is left after backing out of a
+            # chat. Found live on 12.10.1: pull the list to the top once.
+            dev.shell("input swipe 540 700 540 1800 350")
+            time.sleep(1.0)
+            box = _find(_read(), "search chats")
+        if box is None:
             return {"error": "search box not found on the chat list",
                     "foreground": dev.foreground()}
         reads.commit(gate, target=query[:60])

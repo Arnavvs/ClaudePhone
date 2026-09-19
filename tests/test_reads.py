@@ -275,6 +275,9 @@ def test_typing_an_instagram_search_counts_a_search(monkeypatch, temp_ledger):
     typed = _fake_entry(monkeypatch)
     r = _registry().call("text_input", {"text": "delhi food"})
     assert r["read"]["action"] == "search" and typed == ["delhi food"]
+    cleared = _registry().call("text_input", {"text": ""})
+    assert "read" not in cleared and typed == ["delhi food", ""]
+    assert len(rows(temp_ledger, "search")) == 1           # clearing is not a search
     assert [tuple(x)[2] for x in rows(temp_ledger, "search")] == ["delhi food"]
 
 
