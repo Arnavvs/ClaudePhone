@@ -9,22 +9,20 @@ from typing import Any
 from .. import device as dev
 from .. import state
 from .. import ui as uix
+from ..runtime import screen as scr
 from ..selectors import registry as reg
 
 
-def _context(xml: str):
-    """Shared preamble: parse, cache, and identify what we are looking at."""
-    elements = uix.parse(xml)
-    fg = dev.foreground()
-    pkg = fg.get("package") or ""
-    state.remember(elements, pkg)
-    app = state.APP_FOR_PKG.get(pkg)
-    version = dev.app_version(pkg) if pkg else None
-    # Drift MUST be computed from the raw hierarchy: pure-layout containers are
-    # filtered out of `elements` as noise yet remain valid anchors, so checking
-    # the filtered set reports working selectors as missing.
-    live_ids = uix.all_resource_ids(xml)
-    return elements, fg, pkg, app, version, live_ids
+def _context(keep_noise: bool = False):
+    """Shared preamble: read the screen, cache it, identify what we are on.
+
+    Bridge first (2e). `live_ids` still comes from the raw hierarchy - every id
+    including the layout containers `elements` filters out - which the bridge
+    supplies as an all-windows read. See runtime/screen.py.
+    """
+    c = scr.context(keep_noise=keep_noise)
+    return (c["elements"], c["fg"], c["package"], c["app"], c["app_version"],
+            c["live_ids"], c)
 
 
 def register(mcp) -> None:
@@ -33,22 +31,17 @@ def register(mcp) -> None:
         description=(
             "Read the current screen as structured elements. This is the primary "
             "way to see the device - use it instead of screenshot. Returns "
-            "elements with index `i` (for tap), resource-id, text, content-desc, "
-            "tap centre `c`, and flags `f` (C=clickable S=scrollable *=selected). "
+            "elements with index `i`, resource-id, text, content-desc, tap centre "
+            "`c`, and flags `f` (C=clickable S=scrollable *=selected h=hidden), "
+            "plus `ver`: tap with ref='<ver>_<i>'. "
             "Also names the screen and reports selector drift for known apps."
         )
     )
     def ui_dump(query: str = "", clickable_only: bool = False,
                 limit: int = 120, include_system: bool = False) -> dict:
-        d = dev.u2()
-        t0 = time.time()
-        xml = d.dump_hierarchy()
-        ms = int((time.time() - t0) * 1000)
-
-        elements, fg, pkg, app, version, live_ids = _context(xml)
-        if include_system:
-            elements = uix.parse(xml, keep_noise=True)
-            state.remember(elements, pkg)
+        elements, fg, pkg, app, version, live_ids, c = _context(
+            keep_noise=include_system)
+        ms = c["ms"]
 
         screen = drift = None
         if app and version:
@@ -63,7 +56,10 @@ def register(mcp) -> None:
             "app_version": version,
             "screen": screen,
             "dump_ms": ms,
+            "backend": c["backend"],
             "signature": uix.screen_signature(elements),
+            # Refs for tap/long_press are "<ver>_<i>".
+            "ver": state.version(),
             "total_elements": len(elements),
             "returned": min(len(shown), limit),
             "elements": uix.compact(shown, limit=limit),
@@ -73,6 +69,14 @@ def register(mcp) -> None:
         if len(shown) > limit:
             res["truncated"] = (f"{len(shown) - limit} more; narrow with "
                                 f"`query` or raise `limit`")
+        if query and not shown:
+            # Measured live: a decider took `query` for a search of the whole
+            # app, got 0, and asked again with the same query until its budget
+            # ran out, while the item sat one scroll below.
+            res["hint"] = ("no match ON THIS SCREEN - `query` filters what is "
+                           "visible now, it does not search the app. The item "
+                           "may be further down: use scroll_to(query=...), or "
+                           "swipe(direction='up') and read again.")
         return res
 
     @mcp.tool(
@@ -81,11 +85,11 @@ def register(mcp) -> None:
     )
     def find_element(query: str = "", resource_id: str = "",
                      clickable_only: bool = False, limit: int = 25) -> dict:
-        d = dev.u2()
-        elements, *_ = _context(d.dump_hierarchy())
+        elements, *_ = _context()
         hits = uix.find(elements, query=query, rid=resource_id,
                         clickable_only=clickable_only)
-        return {"matches": len(hits), "elements": uix.compact(hits, limit=limit)}
+        return {"matches": len(hits), "ver": state.version(),
+                "elements": uix.compact(hits, limit=limit)}
 
     @mcp.tool(
         description=(
@@ -96,9 +100,7 @@ def register(mcp) -> None:
         )
     )
     def extract_fields(app: str = "", screen: str = "") -> dict:
-        d = dev.u2()
-        elements, fg, pkg, detected, version, live_ids = _context(
-            d.dump_hierarchy())
+        elements, fg, pkg, detected, version, live_ids, _c = _context()
         app_name = app or detected or ""
         if not app_name:
             return {"error": f"no registry for package {pkg!r}",
@@ -109,6 +111,8 @@ def register(mcp) -> None:
             return {"error": "screen not recognised", "app": app_name,
                     "app_version": version,
                     "signature": uix.screen_signature(elements),
+            # Refs for tap/long_press are "<ver>_<i>".
+            "ver": state.version(),
                     "hint": "inspect with ui_dump, then record_baseline"}
 
         fields = reg.extract_fields(app_name, version, scr, elements)

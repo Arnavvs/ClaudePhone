@@ -10,7 +10,46 @@ twice cannot fire one by accident on the first.
 
 from __future__ import annotations
 
+from ... import device as dev
 from ...feed import x as xf
+from ...policy import reads
+from ...policy import writes as wr
+
+
+def _gated(action: str, rule: str, apply: bool, run):
+    """Run an X write through the ledger gate (B2) when apply=true.
+
+    `action` is a ledger action (e.g. not_interested) or "" for a write the
+    ledger has no ceiling for - those are refused unless the operator allowed
+    `rule` for the run. Planning (apply=false) never touches the account and is
+    never gated. The write is recorded only if the tool reports it applied.
+    """
+    if not apply:
+        return run(False)
+    serial = dev.default_serial()
+    decision = wr.gate_action(action, "x", serial, rule)
+    if not decision.allowed:
+        return {"applied": False, "error": "write refused",
+                "write": decision.to_dict()}
+    r = run(True)
+    r["write"] = decision.to_dict()
+    if r.get("applied"):
+        warn = wr.commit(decision, target=rule, serial=serial)
+        if warn:
+            r["write_warning"] = warn
+    return r
+
+
+def _counted(action: str, target: str, run):
+    """Run an X READ through the ledger (B2b). One row per call."""
+    d = reads.acquire(action, "x", target=target)
+    if not d.allowed:
+        return reads.refusal(d)
+    r = run()
+    reads.commit(d, target=target)
+    if isinstance(r, dict):
+        r["read"] = d.to_dict()
+    return r
 
 
 def register(mcp) -> None:
@@ -50,9 +89,11 @@ def register(mcp) -> None:
         )
     )
     def x_feed_post_options(nth: int = 0) -> dict:
-        r = xf.post_options(nth)
-        xf.close_sheet()
-        return r
+        def go():
+            r = xf.post_options(nth)
+            xf.close_sheet()
+            return r
+        return _counted("x_sheet_open", "post %d" % nth, go)
 
     @mcp.tool(
         description=(
@@ -67,7 +108,8 @@ def register(mcp) -> None:
         )
     )
     def x_feed_not_interested(nth: int = 0, apply: bool = False) -> dict:
-        return xf.not_interested(nth, apply=apply)
+        return _gated("not_interested", "x.tool.not_interested", apply,
+                      lambda go: xf.not_interested(nth, apply=go))
 
     @mcp.tool(
         description=(
@@ -78,7 +120,8 @@ def register(mcp) -> None:
     )
     def x_feed_lists(nth: int = 0, list_name: str = "",
                      apply: bool = False) -> dict:
-        return xf.add_to_list(nth, list_name, apply=apply)
+        return _gated("", "x.tool.add_to_list", apply,
+                      lambda go: xf.add_to_list(nth, list_name, apply=go))
 
     @mcp.tool(description="Open X's 'Add tab' -> Timelines customization screen.")
     def x_feed_timelines_screen() -> dict:
@@ -92,7 +135,7 @@ def register(mcp) -> None:
         )
     )
     def x_feed_search_topics(query: str) -> dict:
-        return xf.search_timelines(query)
+        return _counted("x_search", query[:60], lambda: xf.search_timelines(query))
 
     @mcp.tool(
         description=(
@@ -101,7 +144,8 @@ def register(mcp) -> None:
         )
     )
     def x_feed_pin(name: str, unpin: bool = False, apply: bool = False) -> dict:
-        return xf.pin(name, unpin=unpin, apply=apply)
+        return _gated("", "x.tool.pin", apply,
+                      lambda go: xf.pin(name, unpin=unpin, apply=go))
 
     @mcp.tool(
         description=(
@@ -113,9 +157,11 @@ def register(mcp) -> None:
         )
     )
     def x_feed_snapshot(max_tweets: int = 40, max_swipes: int = 20) -> dict:
-        r = xf.snapshot(max_tweets, max_swipes)
-        r.pop("tweets", None)
-        return r
+        def go():
+            r = xf.snapshot(max_tweets, max_swipes)
+            r.pop("tweets", None)
+            return r
+        return _counted("x_scroll", "snapshot %d posts" % max_tweets, go)
 
     @mcp.tool(
         description=(
@@ -136,7 +182,7 @@ def register(mcp) -> None:
         )
     )
     def x_feed_search(query: str, tab: str = "") -> dict:
-        return xf.search(query, tab=tab)
+        return _counted("x_search", query[:60], lambda: xf.search(query, tab=tab))
 
     @mcp.tool(
         description=(
@@ -158,7 +204,8 @@ def register(mcp) -> None:
         )
     )
     def x_feed_like(nth: int = 0, apply: bool = False) -> dict:
-        return xf.like(nth, apply=apply)
+        return _gated("", "x.tool.like", apply,
+                      lambda go: xf.like(nth, apply=go))
 
     @mcp.tool(
         description=(
@@ -173,6 +220,10 @@ def register(mcp) -> None:
     )
     def x_feed_consume(duration_s: float = 120.0, dwell_min: float = 1.5,
                        dwell_max: float = 6.0, apply: bool = False) -> dict:
-        r = xf.consume(duration_s, dwell_min, dwell_max, apply=apply)
-        r.pop("tweets", None)
-        return r
+        def go():
+            r = xf.consume(duration_s, dwell_min, dwell_max, apply=apply)
+            r.pop("tweets", None)
+            return r
+        if not apply:                       # planning only, nothing is read
+            return go()
+        return _counted("x_consume", "%.0fs dwell" % duration_s, go)

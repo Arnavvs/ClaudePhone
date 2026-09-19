@@ -1,0 +1,15 @@
+{
+  "goal": "What is this phone's screen timeout set to?",
+  "device": "RZ8N70HYQSB (Samsung SM-M215F); the expected value is this phone's setting as of 2026-09-19",
+  "checks": [
+    {
+      "answer": "\\b10\\s*(min|minutes)\\b"
+    },
+    {
+      "reached_text": "screen timeout"
+    },
+    {
+      "package": "com.android.settings"
+    }
+  ]
+}

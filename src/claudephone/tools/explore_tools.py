@@ -35,12 +35,10 @@ def _is_chrome(anchor: str) -> bool:
 
 
 def _snapshot() -> tuple[list, dict[str, list[str]], set[str], dict]:
-    d = dev.u2()
-    xml = d.dump_hierarchy()
-    els = uix.parse(xml)
-    fg = dev.foreground()
-    state.remember(els, fg.get("package") or "")
-    return els, uix.values_by_anchor(els), uix.all_resource_ids(xml), fg
+    """Bridge first (2e); `live_ids` still covers the raw hierarchy."""
+    from ..runtime import screen as scr
+    c = scr.context()
+    return c["elements"], uix.values_by_anchor(c["elements"]), c["live_ids"], c["fg"]
 
 
 def register(mcp) -> None:

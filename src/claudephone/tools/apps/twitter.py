@@ -156,8 +156,10 @@ def assemble_tweets(els) -> list[dict]:
 
 
 def _dump():
-    els = uix.parse(dev.u2().dump_hierarchy())
-    state.remember(els, X_PKG)
+    from ...runtime import targeting as tg
+    r = tg.read_screen()                              # bridge first (2e)
+    els = r["elements"]
+    state.remember(els, r.get("package") or X_PKG)
     return els
 
 
@@ -306,11 +308,18 @@ def register(mcp) -> None:
                           max_swipes: int = 15, settle_s: float = 1.3) -> dict:
         t0 = time.time()
         if i is not None:
-            els = state.last.get("elements") or []
-            if 0 <= i < len(els):
-                x, y = els[i].center
-                dev.shell(f"input tap {x} {y}")
-                time.sleep(3.0)
+            # Same pre-tap check as tap(): a cached index on a scrolling
+            # timeline is exactly the case that taps the wrong tweet.
+            from ...runtime import targeting as tg
+            el, err = tg.from_cache(i=i)
+            if err:
+                return err
+            chk = tg.check_target(el)
+            if chk["status"] not in tg.PROCEED:
+                return {"error": "not opened: " + chk["status"], "check": chk}
+            x, y = chk["tap"]
+            dev.shell(f"input tap {x} {y}")
+            time.sleep(3.0)
         else:
             els = _dump()
             posts = [e for e in els if e.anchor == "timeline_post"

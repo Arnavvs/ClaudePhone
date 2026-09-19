@@ -116,8 +116,13 @@ def register(mcp) -> None:
             if not btn:
                 return {"error": "no comment_button on screen; open a reel/post "
                                  "first", "opened_sheet": False}
+            from ...policy import reads
+            gate = reads.acquire("comment_read", "ig")
+            if not gate.allowed:
+                return reads.refusal(gate, opened_sheet=False)
             x, y = btn[0].center
             dev.shell(f"input tap {x} {y}")
+            reads.commit(gate)
             time.sleep(3.0)
 
         # confirm the sheet actually opened

@@ -29,6 +29,7 @@ import time
 from typing import Any, Optional
 
 from ... import device as dev
+from ...policy import reads
 from ... import state
 from ... import ui as uix
 
@@ -58,10 +59,19 @@ def parse_count(raw: str) -> Optional[int]:
 
 
 def _dump():
-    d = dev.u2()
-    xml = d.dump_hierarchy()
-    els = uix.parse(xml)
-    state.remember(els, IG_PKG)
+    """One screen read for the Instagram tools, bridge first.
+
+    Measured on the Samsung (Android 12) 2026-09-18: a u2 dump SUPPRESSES the
+    accessibility service, so a tool that dumps through u2 costs the next bridge
+    call a 1.7 s hand-back - the scrapers and the agent's own tools were paying
+    that on every alternation. targeting.read_screen prefers the bridge and
+    falls back to u2, and since the two now agree on anchors (runtime/bridge.py
+    _elements_from), values_by_anchor reads the same either way.
+    """
+    from ...runtime import targeting as tg
+    r = tg.read_screen()
+    els = r["elements"]
+    state.remember(els, r.get("package") or IG_PKG)
     return els
 
 
@@ -102,6 +112,9 @@ def register(mcp) -> None:
     )
     def ig_open_profile(handle: str, settle_s: float = 5.0) -> dict:
         h = handle.lstrip("@").strip()
+        gate = reads.acquire("profile_open", "ig", target=h)
+        if not gate.allowed:
+            return reads.refusal(gate, handle=h, opened=False)
         t0 = time.time()
         dev.shell("am start -a android.intent.action.VIEW "
                   f"-d 'instagram://user?username={h}'")
@@ -109,7 +122,9 @@ def register(mcp) -> None:
         els = _dump()
         title = _first(els, "action_bar_title", "text")
         ok = bool(title and title.lower() == h.lower())
+        reads.commit(gate, target=h)
         return {"handle": h, "opened": ok, "action_bar_title": title,
+                "read": gate.to_dict(),
                 "seconds": round(time.time() - t0, 2),
                 "hint": None if ok else
                         "title mismatch - profile may be private, renamed, or "
@@ -194,6 +209,11 @@ def register(mcp) -> None:
     )
     def ig_scan_grid(max_items: int = 30, max_swipes: int = 10,
                      settle_s: float = 1.2) -> dict:
+        who = _current_handle() or ""
+        gate = reads.acquire("grid_scan", "ig", target=who)
+        if not gate.allowed:
+            return reads.refusal(gate)
+        reads.commit(gate, target=who)
         t0 = time.time()
         seen: set[str] = set()
         posts: list[dict] = []
@@ -227,7 +247,7 @@ def register(mcp) -> None:
                 break
             dev.shell("input swipe 540 1600 540 900 300")
             time.sleep(settle_s)
-        return {"posts": posts, "reels": reels,
+        return {"posts": posts, "reels": reels, "read": gate.to_dict(),
                 "post_count": len(posts), "reel_count": len(reels),
                 "swipes": swipe, "seconds": round(time.time() - t0, 2)}
 
@@ -246,6 +266,11 @@ def register(mcp) -> None:
         bad = _wrong_profile(expect_handle)
         if bad:
             return bad
+        who = expect_handle.lstrip("@") or _current_handle() or ""
+        gate = reads.acquire("grid_scan", "ig", target=who)
+        if not gate.allowed:
+            return reads.refusal(gate)
+        reads.commit(gate, target=who)
         els = _dump()
         tabs = [e for e in els if e.rid == "profile_tab_icon_view"
                 and (e.desc or "").strip().lower() == "reels"]
@@ -287,6 +312,7 @@ def register(mcp) -> None:
         return {
             "collected": len(sample),
             "swipes": swipe,
+            "read": gate.to_dict(),
             "reels": sample,
             "ranked_by_views": [r["grid_index"] for r in ranked],
             "seconds": round(time.time() - t0, 2),
@@ -306,6 +332,12 @@ def register(mcp) -> None:
                          settle_s: float = 1.4,
                          open_first: bool = True) -> dict:
         t0 = time.time()
+        # One reel_open per post viewed (the feed opened from the grid), paced
+        # to the minute and re-checked against the hour/day as the feed scrolls.
+        who = _current_handle() or ""
+        gate = reads.acquire("reel_open", "ig", target=who)
+        if not gate.allowed:
+            return reads.refusal(gate, collected=0, posts=[])
         if open_first:
             # ig_scan_grid leaves the grid SCROLLED, so a profile with few posts
             # can have its only post tile off-screen by now. Scroll back up
@@ -342,6 +374,8 @@ def register(mcp) -> None:
                 if not key:
                     continue
                 if key not in merged:
+                    if not reads.unit(gate, target=who):
+                        break
                     merged[key] = p
                     order.append(key)
                     fresh += 1
@@ -351,12 +385,12 @@ def register(mcp) -> None:
                             merged[key][k] = v
                             fresh += 1
             barren = 0 if fresh else barren + 1
-            if len(merged) >= max_posts or barren >= 2:
+            if len(merged) >= max_posts or barren >= 2 or gate.why.startswith("stopped"):
                 break
             dev.shell("input swipe 540 1700 540 700 320")
             time.sleep(settle_s)
         posts = [merged[k] for k in order][:max_posts]
-        return {"collected": len(posts), "swipes": swipe,
+        return {"collected": len(posts), "swipes": swipe, "read": gate.to_dict(),
                 "opened_feed": bool(open_first),
                 "posts": posts,
                 "seconds": round(time.time() - t0, 2)}
@@ -520,6 +554,11 @@ def register_orchestrator(mcp) -> None:
         want = sorted(set(int(i) for i in indices))
         if not want:
             return {"error": "no indices given"}
+        # datacollect counts a lockstep walk as ONE reel_walk, reel count in the note.
+        who = expect_handle.lstrip("@") or _current_handle() or ""
+        gate = reads.acquire("reel_walk", "ig", target=who)
+        if not gate.allowed:
+            return reads.refusal(gate)
         version = dev.app_version(IG_PKG) or ""
 
         els = _dump()
@@ -529,6 +568,7 @@ def register_orchestrator(mcp) -> None:
                              "first so the Reels tab is selected"}
         x, y = thumbs[0].center
         dev.shell(f"input tap {x} {y}")
+        reads.commit(gate, target=who)
 
         def extract_when_ready() -> dict:
             """Poll until the engagement overlay renders, then extract.
@@ -567,6 +607,7 @@ def register_orchestrator(mcp) -> None:
         dev.shell("input keyevent KEYCODE_BACK")
         time.sleep(0.8)
         return {"requested": want, "collected": len(out), "reels": out,
+                "read": gate.to_dict(),
                 "seconds": round(time.time() - t0, 2)}
 
 
@@ -598,8 +639,12 @@ def register_about(mcp) -> None:
         if not more:
             return {"error": "More button not found - is a reel open?",
                     "foreground": dev.foreground()}
+        gate = reads.acquire("sheet_open", "ig")
+        if not gate.allowed:
+            return reads.refusal(gate)
         x, y = more[0].center
         dev.shell(f"input tap {x} {y}")
+        reads.commit(gate)
 
         # Poll until the sheet exists AND the AI text has been generated: the
         # description arrives a beat after the sheet renders, so dumping once
@@ -642,6 +687,7 @@ def register_about(mcp) -> None:
             "menu_options": options,
             "seconds": round(time.time() - t0, 2),
             "source": "meta_ai_generated",
+            "read": gate.to_dict(),
             "safety": "read-only; no sheet row was tapped",
             "note": None if desc else
                     "sheet opened but the AI text had not generated in time - "

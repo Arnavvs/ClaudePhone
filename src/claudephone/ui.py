@@ -58,6 +58,17 @@ class Element:
     selected: bool = False
     checked: bool = False
     pkg: str = ""
+    # Bridge v0.2 only. `hidden`: the system says the node is not visible to the
+    # user (e.g. scrolled out of its list), so its centre is not a safe tap
+    # target. `window`: set for elements from a window other than the active one.
+    hidden: bool = False
+    window: str = ""
+    # Bridge 0.2.2 (B10): an editable field, the one holding input focus, and a
+    # password field - so text entry can find the field it typed into.
+    editable: bool = False
+    focused: bool = False
+    password: bool = False
+    hint: bool = False           # `text` is the field's hint, not its content
 
     @property
     def center(self) -> tuple[int, int]:
@@ -83,9 +94,16 @@ class Element:
             "S" if self.scrollable else "",
             "*" if self.selected else "",
             "x" if self.checked else "",
+            "h" if self.hidden else "",
+            "E" if self.editable else "",
+            "F" if self.focused else "",
+            "P" if self.password else "",
+            "H" if self.hint else "",
         ])
         if flags:
             d["f"] = flags
+        if self.window:
+            d["w"] = self.window
         return d
 
 
@@ -97,8 +115,27 @@ def _short_cls(cls: str) -> str:
     return cls.rsplit(".", 1)[-1] if cls else ""
 
 
-def parse(xml: str, keep_noise: bool = False) -> list[Element]:
-    """Flatten a hierarchy dump into semantic elements."""
+def parse(xml: str, keep_noise: bool = False,
+          max_text: int = 300, keep_layout: bool = False) -> list[Element]:
+    """Flatten a hierarchy dump into semantic elements.
+
+    `max_text` caps each label. 300 is right for apps that label a control at a
+    time, and wrong for ones that put a whole document on a single node:
+    Telegram renders an entire message - body, author, timestamp, reactions and
+    view count - as one string, so a 300-char cap silently decapitates every
+    long post AND takes its "Received at HH:MM" with it, which is the landmark
+    the message parser splits on. Such a message then does not read as a
+    message at all; it just vanishes from the transcript. Callers that parse
+    whole-node text should raise this.
+
+    `keep_layout` additionally keeps nodes that say NOTHING - no text, no
+    content-desc, no id, not interactive - as long as they have a real
+    rectangle. Normally those are pure layout and dropping them is the whole
+    point of this function. The exception is an app that draws its content
+    instead of publishing it: Telegram's chat list is a stack of full-width
+    ViewGroups with every name and preview painted onto a canvas, so the only
+    evidence a row exists at all is its rectangle.
+    """
     out: list[Element] = []
     try:
         root = ET.fromstring(xml)
@@ -122,6 +159,11 @@ def parse(xml: str, keep_noise: bool = False) -> list[Element]:
         has_value = bool(text or desc)
         interactive = a.get("clickable") == "true" or a.get("scrollable") == "true"
         meaningful = has_value or (rid and cls not in _NOISE_CLASSES) or interactive
+        if keep_layout and not meaningful:
+            m0 = _BOUNDS.search(a.get("bounds", ""))
+            if m0:
+                x1, y1, x2, y2 = (int(g) for g in m0.groups())
+                meaningful = (x2 - x1) > 8 and (y2 - y1) > 8
 
         if meaningful and (keep_noise or not noisy):
             m = _BOUNDS.search(a.get("bounds", ""))
@@ -130,8 +172,8 @@ def parse(xml: str, keep_noise: bool = False) -> list[Element]:
                 i=idx,
                 rid=rid,
                 anchor=(new_chain[-1] if new_chain else ""),
-                text=text[:300],
-                desc=desc[:300],
+                text=text[:max_text],
+                desc=desc[:max_text],
                 cls=_short_cls(cls),
                 bounds=b,  # type: ignore[arg-type]
                 clickable=a.get("clickable") == "true",

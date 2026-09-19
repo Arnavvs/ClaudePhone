@@ -1,0 +1,12 @@
+{
+  "goal": "What is the Android security patch level on this phone?",
+  "device": "RZ8N70HYQSB (Samsung SM-M215F); the expected value is this phone's patch level as of 2026-09-19",
+  "checks": [
+    {
+      "answer": "april\\s*(1,?\\s*)?2022|1\\s*april\\s*2022|2022-04"
+    },
+    {
+      "reached_text": "security patch"
+    }
+  ]
+}

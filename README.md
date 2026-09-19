@@ -90,6 +90,10 @@ claudephone doctor                      # check every link in the chain
 claudephone run "<goal>"                # give it a task, watch it work
 claudephone tools --pack phone          # browse the tool surface
 claudephone tool ui_dump --args '{"limit":10}'   # call one tool directly
+claudephone runs                        # every run it has ever done
+claudephone verify latest --expect '<regex>'   # check a run, label it pass/fail
+claudephone macro make latest --name X  # a verified run becomes a guarded macro
+claudephone macro run X                 # replay it with no model; stops on a mismatch
 claudephone serve --host 0.0.0.0        # accept tasks from your laptop
 ```
 
@@ -121,7 +125,14 @@ claude mcp add claudephone -- python bridge/mcp_bridge.py
 
 The laptop then has `phone_task`, `phone_tool`, `phone_tools` and
 `phone_status`. `phone_task` sends a **goal**; the phone runs its own loop
-locally and streams back a transcript.
+locally and streams back a transcript. For long tasks,
+`phone_task(..., background=True)` returns a session id at once, and
+`phone_task_status`, `phone_task_stop`, `phone_reply` and `phone_run_inspect`
+follow it.
+
+Every tool carries MCP annotations. Ones that only look (`ui_dump`,
+`device_info`, ...) are marked read-only, so a client can auto-approve them.
+Sends, likes, joins, file writes and shell are marked destructive.
 
 This matters more than it looks. Driving the phone step-by-step from the laptop
 costs one turn of a large model *per tap*. Delegating costs one laptop turn
@@ -133,15 +144,17 @@ The saving is the expensive turns, not the network —
 
 ## The tool surface
 
-**132 tools in 10 packs.** Only `core` (19) is loaded at the start of a run; the
-agent widens its own surface with `use_tools(pack)`. Exposing all 132 would cost
-~12,200 tokens of schema **per turn** against ~1,600 for core.
+**164 tools in 11 packs.** Only `core` (38) is loaded at the start of a run; the
+agent widens its own surface with `use_tools(pack)`. Exposing all 164 would cost
+roughly 16,500 tokens of schema **per turn** against roughly 4,200 for core
+(a characters/4 estimate, 2026-09-19).
 
 | Pack | Tools | What |
 |---|---|---|
-| `core` | 19 | Screen reading, tapping, typing, app launch, tool discovery |
+| `core` | 38 | Screen reading, tapping, typing, app launch, tool discovery, deep links, notes/recall, diagnose, handoff |
 | `phone` | 29 | SMS, calls, camera, GPS, sensors, torch, TTS, notifications, Wi-Fi |
 | `x` | 23 | X/Twitter timelines, search, feed-shaping controls |
+| `telegram` | 13 | Channels and chats: read, search, join, reply |
 | `system` | 14 | Battery, network, storage, clipboard, waiting |
 | `instagram` | 11 | Profiles, grids, reels, comment threads |
 | `learn` | 10 | Teach the agent an app it has never seen |
@@ -150,7 +163,9 @@ agent widens its own surface with `use_tools(pack)`. Exposing all 132 would cost
 | `instagram_capture` | 7 | Segmented reel recording via MediaProjection |
 | `shell` | 4 | Arbitrary commands at both privilege levels |
 
-Full catalogue: **[docs/TOOLS.md](docs/TOOLS.md)**.
+Full catalogue: **[docs/TOOLS.md](docs/TOOLS.md)**. The Telegram pack has
+its own write-up — **[docs/TELEGRAM.md](docs/TELEGRAM.md)** — because that app
+publishes no resource-ids and has to be parsed rather than selected.
 
 ### Teaching it a new app
 
@@ -193,6 +208,25 @@ not for transport latency. Details: **[docs/BENCHMARKS.md](docs/BENCHMARKS.md)**
 - The HTTP server binds loopback only unless you pass `--host`, and then
   requires a bearer token. It can do anything to the phone.
 - `--mode readonly` is a genuine read-only mode; use it when exploring.
+- **Account writes go through the ledger.** A tap is judged by what it hits:
+  likes, saves, reposts, DMs, comments and reports are refused outright;
+  follow / interested / not interested / Telegram join run only when enabled for
+  the run (`--allow-write follow`) and the datacollect ledger has budget left for
+  that phone's account. See `policy/writes.json`.
+- **A checkpoint stops the run, not the model's judgement.** Login, 2FA,
+  CAPTCHA, "unusual activity" and "action blocked" screens end the run with
+  `human_required`; `request_human` and `ask_operator` are the agent's own ways
+  to hand back. See `harness/handoff.py`.
+- **Budgeted reads are counted in the same ledger** — profile opens, grid scans,
+  reels, sheets, comment sheets, searches, Telegram chat opens — and paced to its
+  per-minute ceiling. With no ledger reachable (on the phone itself) they are
+  refused unless you pass `--allow-uncounted-reads`. Typing into a comment or
+  message box is refused. See `policy/reads.py`.
+- **Running the agent on the phone?** There is no `collect.db` in Termux, so
+  serve the ledger from the laptop and point the phone at it:
+  `python -m claudephone.policy.ledger_service --serial <serial>`, then set
+  `CLAUDEPHONE_LEDGER_URL` / `CLAUDEPHONE_LEDGER_TOKEN` in Termux. `ledger_status`
+  says whether a run will be counted before you start it.
 - Automated collection generally breaches the terms of the platforms in the app
   packs. Wrapping it in an agent changes the convenience, not the permission.
 

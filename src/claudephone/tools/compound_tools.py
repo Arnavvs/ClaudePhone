@@ -90,6 +90,60 @@ def _swipe(obs: Observer, direction: str, duration_ms: int = 220) -> None:
                 duration=duration_ms / 1000.0)
 
 
+def _nudge(obs: Observer, toward_top: bool) -> None:
+    """A short, slow drag - a quarter screen, no fling - to bring an element
+    that is in the tree but not visible (under a collapsing toolbar, or just
+    past the fold) into view without scrolling past it."""
+    w, h = _screen_size(obs)
+    x = int(w * 0.5)
+    y1, y2 = (int(h * 0.45), int(h * 0.70)) if toward_top else (int(h * 0.70), int(h * 0.45))
+    kind, d = _act(obs)
+    if kind == "bridge":
+        d.swipe(x, y1, x, y2, 450)
+    else:
+        d.swipe(x, y1, x, y2, duration=0.45)
+
+
+def _swipe_gate(o: Observer, direction: str):
+    """Ledger check for a swipe that advances an Instagram reel (B2b).
+
+    -> (decision or None, refusal dict or None). A forward swipe on a reel
+    viewer is a feed_reel (Reels tab) or reel_open (viewer opened from a grid);
+    anything else is not counted.
+    """
+    from ..policy import reads
+    # _swipe treats anything it does not know as "up", so the gate must too.
+    if DIRECTIONS.get(direction, DIRECTIONS["up"]) != DIRECTIONS["up"]:
+        return None, None
+    cur = o.last or o.look()
+    action = reads.reel_advance_action(cur.elements, cur.package)
+    if not action:
+        if cur.package == "com.twitter.android":
+            refused = reads.bucketed("x_scroll", "x", target="swipe")
+            if refused is not None:
+                return refused, reads.refusal(refused)
+        return None, None
+    d = reads.acquire(action, "ig", target="swipe")
+    if not d.allowed:
+        return d, reads.refusal(d)
+    return d, None
+
+
+def _swipe_commit(d) -> None:
+    if d is not None:
+        from ..policy import reads
+        reads.commit(d, target="swipe")
+
+
+def _obstructed(obs) -> Optional[list]:
+    """Compact description of windows over the app, or None when clear."""
+    rows = getattr(obs, "obstructions", None) or []
+    if not rows:
+        return None
+    return [{"type": w.get("type"), "pkg": w.get("pkg"), "b": w.get("b")}
+            for w in rows[:4]]
+
+
 def _item_text(diff: dict, min_len: int = 2) -> list[str]:
     """The human-meaningful values that appeared, longest first."""
     seen, out = set(), []
@@ -120,16 +174,24 @@ def register(reg) -> None:
         after = o.look()
         if full or before is None:
             out = {"package": after.package, "activity": after.activity,
+                   "ver": state.version(),
                    "dump_ms": after.dump_ms,
                    "total_elements": len(after.elements),
                    "elements": after.compact(limit=limit)}
             blocked = o.explain_empty(after)
             if blocked:
                 out["blocked_by"] = blocked
+            over = _obstructed(after)
+            if over:
+                out["obstructed_by"] = over
             return out
         d = Observer.diff(before, after, limit=limit)
         d["package"] = after.package
+        d["ver"] = state.version()
         d["dump_ms"] = after.dump_ms
+        over = _obstructed(after)
+        if over:
+            d["obstructed_by"] = over
         if not d["content_changed"]:
             d["note"] = ("screen is unchanged since your last look - acting "
                          "again, or waiting, is more useful than looking again")
@@ -155,28 +217,79 @@ def register(reg) -> None:
     @reg.tool(
         description=(
             "Tap something and report what changed as a result - the tap, the "
-            "wait, and the verification in a single call. Give either `i` (an "
-            "element index from your last look) or x/y. Returns the delta, not "
-            "the whole screen, and tells you plainly if nothing happened."
+            "wait, and the verification in a single call. Give `ref` "
+            "('<ver>_<i>' from your latest look), a bare `i`, or x/y. The "
+            "element is found again on a fresh read first: if it moved the tap "
+            "follows it; if it is gone, covered or replaced the tap is refused "
+            "with the reason. Returns the delta, not the whole screen."
         ),
         dangerous=True,
     )
-    def tap_and_see(i: int = -1, x: int = -1, y: int = -1,
-                    timeout_s: float = 6.0) -> dict:
+    def tap_and_see(ref: str = "", i: int = -1, x: int = -1, y: int = -1,
+                    timeout_s: float = 6.0, verify: bool = True) -> dict:
+        from ..policy import writes as wr
+        from ..runtime import targeting as tg
         o = observer()
-        if i >= 0:
-            els = state.last.get("elements") or []
-            if i >= len(els):
-                return {"error": "index " + str(i) + " is beyond the "
-                        + str(len(els)) + " elements in the last look",
-                        "hint": "call look() again - the screen has moved on"}
-            x, y = els[i].center
-        if x < 0 or y < 0:
-            return {"error": "give either i (from your last look) or x and y"}
+        serial = o.serial or dev.default_serial()
+        check = None
+        if ref or i >= 0:
+            el, err = tg.from_cache(i=None if ref else i, ref=ref)
+            if err:
+                return err
+            if verify:
+                check = tg.check_target(el, serial=o.serial)
+                if check["status"] not in tg.PROCEED:
+                    return {"error": "not tapped: " + check["status"],
+                            "check": tg.public(check)}
+                x, y = check["tap"]
+                target, fresh, pkg = check["_element"], check["_fresh"], check["package"]
+            else:
+                x, y = el.center
+                target, fresh = el, state.last.get("elements") or []
+                pkg = state.last.get("pkg") or ""
+        else:
+            if x < 0 or y < 0:
+                return {"error": "give ref, i (from your last look) or x and y"}
+            pt = tg.check_point(int(x), int(y), serial=o.serial)
+            fresh, pkg = pt["_fresh"], pt["package"]
+            target = wr.at_point(fresh, int(x), int(y))
+        # B2: judge what the tap will hit; never skipped, even with verify=false.
+        decision = wr.decide(wr.classify_tap(target, fresh, int(x), int(y), pkg), serial)
+        if not decision.allowed:
+            return {"error": "not tapped: write refused", "write": decision.to_dict(),
+                    **({"check": tg.public(check)} if check else {})}
+        # B2b: a tap that opens a budgeted read (profile, sheet, comments, reel).
+        from ..policy import reads
+        read_gate = None
+        _, count_action = reads.classify_tap_count(target, fresh, int(x), int(y), pkg)
+        if count_action and decision.verdict.kind == "read":
+            read_gate = reads.acquire(count_action, reads.platform_of(pkg),
+                                      serial=serial)
+            if not read_gate.allowed:
+                return reads.refusal(read_gate)
         kind, d = _act(o)
         act = ((lambda: d.tap(int(x), int(y))) if kind == "bridge"
                else (lambda: d.click(x, y)))
-        return o.act_and_observe(act, timeout_s=timeout_s)
+        res = o.act_and_observe(act, timeout_s=timeout_s)
+        if kind == "bridge":
+            lands = (d.last_tap or {}).get("lands_on") or {}
+            if lands.get("covered") and not lands.get("bar"):
+                # The tap went to a window over the app (keyboard, alert, chat
+                # head). Say so - otherwise "nothing changed" reads as a dead app.
+                res["tap_landed_on"] = lands
+        if check is not None and check["status"] != "same":
+            res["check"] = tg.public(check)
+        if decision.verdict.kind != "read":
+            res["write"] = decision.to_dict()
+            warn = wr.commit(decision, serial=serial)
+            if warn:
+                res["write_warning"] = warn
+        if read_gate is not None:
+            reads.commit(read_gate, target=(target.text or target.desc or target.rid)
+                         if target is not None else "", serial=serial)
+            res["read"] = read_gate.to_dict()
+        res["ver"] = state.version()
+        return res
 
     @reg.tool(
         description=(
@@ -188,8 +301,14 @@ def register(reg) -> None:
     )
     def swipe_and_see(direction: str = "up", timeout_s: float = 6.0) -> dict:
         o = observer()
+        gate, refused = _swipe_gate(o, direction)
+        if refused:
+            return refused
         res = o.act_and_observe(lambda: _swipe(o, direction),
                                 timeout_s=timeout_s)
+        _swipe_commit(gate)
+        if gate is not None:
+            res["read"] = gate.to_dict()
         if not res.get("changed") and o.last is not None:
             blocked = o.explain_empty(o.last)
             if blocked:
@@ -224,8 +343,14 @@ def register(reg) -> None:
     def feed_next(direction: str = "up", timeout_s: float = 6.0,
                   settle_s: float = 0.4) -> dict:
         o = observer()
+        gate, refused = _swipe_gate(o, direction)
+        if refused:
+            return refused
         res = o.act_and_observe(lambda: _swipe(o, direction),
                                 timeout_s=timeout_s)
+        _swipe_commit(gate)
+        if gate is not None:
+            res["read"] = gate.to_dict()
         if settle_s:
             time.sleep(settle_s)
             after = o.look()
@@ -260,6 +385,7 @@ def register(reg) -> None:
         seen: set = set()
         repeats = 0
         stopped = "count reached"
+        counted: dict = {}
 
         o.look()
         for n in range(count):
@@ -267,7 +393,14 @@ def register(reg) -> None:
                 stopped = "max_seconds"
                 break
             before = o.last
+            gate, refused = _swipe_gate(o, direction)
+            if refused:
+                stopped = "ledger: " + refused["read"].get("why", "refused")
+                break
             _swipe(o, direction)
+            _swipe_commit(gate)
+            if gate is not None:
+                counted[gate.action] = counted.get(gate.action, 0) + 1
             after, waited = o.wait_for_change(timeout_s=timeout_s,
                                               baseline=before)
             if after is None:
@@ -300,6 +433,7 @@ def register(reg) -> None:
             "seconds": round(time.time() - started, 1),
             "screen_reads": o.reads,
             "package": (o.last.package if o.last else None),
+            **({"ledger_counted": counted} if counted else {}),
             "items": items,
         }
 
@@ -320,13 +454,49 @@ def register(reg) -> None:
             hits = [e for e in obs.elements
                     if q in ((e.text or "") + " " + (e.desc or "")
                              + " " + (e.rid or "")).lower()]
-            if hits:
+            visible = [e for e in hits if not getattr(e, "hidden", False)]
+            # A match the system says is not visible to the user (under a
+            # collapsing toolbar, past the fold) is in the tree but cannot be
+            # tapped. Found live on Samsung Settings > Display: "Screen
+            # timeout" at y=290 was hidden under the title bar while its
+            # summary line below it was visible, and scroll_to said found.
+            if hits and not visible:
+                from ..policy import reads
+                if reads.reel_advance_action(obs.elements, obs.package):
+                    # On a reel viewer any drag can advance a reel uncounted.
+                    return {"found": True, "visible": False, "after_swipes": n,
+                            "matches": len(hits), "ver": state.version(),
+                            "elements": state.with_refs(uix.compact(hits, limit=8)),
+                            "note": "the match is not visible; not nudging on a "
+                                    "reel viewer"}
+                for _ in range(2):
+                    h = _screen_size(o)[1]
+                    _nudge(o, toward_top=hits[0].center[1] < h / 2)
+                    time.sleep(settle_s)
+                    obs = o.look()
+                    hits = [e for e in obs.elements
+                            if q in ((e.text or "") + " " + (e.desc or "")
+                                     + " " + (e.rid or "")).lower()]
+                    visible = [e for e in hits if not getattr(e, "hidden", False)]
+                    if visible or not hits:
+                        break
+            if visible:
                 return {"found": True, "after_swipes": n,
-                        "matches": len(hits),
-                        "elements": uix.compact(hits, limit=8)}
+                        "matches": len(visible), "ver": state.version(),
+                        "elements": state.with_refs(uix.compact(visible, limit=8))}
+            if hits:
+                return {"found": True, "visible": False, "after_swipes": n,
+                        "matches": len(hits), "ver": state.version(),
+                        "elements": state.with_refs(uix.compact(hits, limit=8)),
+                        "note": "in the tree but not visible, even after nudging; "
+                                "a tap on it may be refused"}
             if n == max_swipes:
                 break
+            gate, refused = _swipe_gate(o, direction)
+            if refused:
+                return {"found": False, "after_swipes": n, **refused}
             _swipe(o, direction)
+            _swipe_commit(gate)
             time.sleep(settle_s)
         return {"found": False, "after_swipes": max_swipes,
                 "hint": "not on screen within " + str(max_swipes) + " swipes; "
@@ -350,13 +520,71 @@ def register(reg) -> None:
         ok = obs.package == pkg
         out = {"launched": pkg, "foreground": obs.package, "arrived": ok,
                "waited_s": waited, "total_elements": len(obs.elements),
-               "elements": obs.compact(limit=limit)}
+               "ver": state.version(),
+               "elements": state.with_refs(obs.compact(limit=limit))}
         if not ok:
             blocked = o.explain_empty(obs)
             out["blocked_by"] = blocked or (
                 "foreground is " + (obs.package or "nothing") + ", not " + pkg
                 + ". The app may have failed to start, or a permission dialog "
                 "may be in front.")
+        return out
+
+    @reg.tool(
+        description=(
+            "Report whether this run's account writes and budgeted reads will "
+            "be counted: which account this phone maps to, whether the ledger "
+            "is the local database or the laptop's ledger service, and what is "
+            "left today for the actions that matter. Check this before a "
+            "collection run - a refusal mid-run costs more than a question."
+        )
+    )
+    def ledger_status(actions: list = None) -> dict:
+        from ..policy import ledger_service as ls
+        from ..policy import reads
+        from ..policy import writes as wr
+        o = observer()
+        serial = o.serial or dev.default_serial() or ""
+        out: dict = {"serial": serial,
+                     "source": "service" if ls.configured_url() else "local database",
+                     "uncounted_reads_allowed": reads.uncounted_allowed()}
+        if ls.configured_url():
+            out["service"] = ls.available()
+        asked = [str(a) for a in (actions or [])]
+        # What each platform actually spends. x_* and tg_search have no BUDGET
+        # entry, so they run on the ledger's DEFAULT until Arnav sets ceilings.
+        per_platform = {
+            "ig": ["profile_open", "grid_scan", "reel_open", "reel_walk", "feed_reel",
+                   "sheet_open", "comment_read", "search", "follow", "not_interested"],
+            "x": ["x_scroll", "x_search", "x_consume", "x_sheet_open", "follow",
+                  "not_interested"],
+            "tg": ["tg_read", "tg_search", "tg_join"],
+            "li": ["li_search", "li_scroll", "li_profile_open"],
+        }
+        for platform in ("ig", "x", "tg", "li"):
+            want = asked or per_platform[platform]
+            account = wr.account_for(serial, platform)
+            if not account:
+                continue
+            row: dict = {"account": account}
+            try:
+                led = wr.ledger_for(account, serial)
+            except wr.LedgerUnavailable as e:
+                row["error"] = str(e)[:160]
+                out[platform] = row
+                continue
+            for action in want:
+                try:
+                    b = led.budget(action)
+                    ok, why = led.can(action, 1)
+                    row[action] = {"ok": bool(ok), "per_min": b["per_min"], "why": why}
+                except Exception as e:                       # one bad action, not the lot
+                    row[action] = {"error": type(e).__name__ + ": " + str(e)[:80]}
+            out[platform] = row
+        if not any(k in out for k in ("ig", "x", "tg", "li")):
+            out["hint"] = ("this phone is in no account map, so writes and counted "
+                           "reads are refused; set CLAUDEPHONE_ACCOUNT_MAP, or run "
+                           "with --allow-uncounted-reads for reads only")
         return out
 
     @reg.tool(
@@ -374,11 +602,19 @@ def register(reg) -> None:
                      "installed": br.Bridge.installed(o.serial),
                      "enabled": br.Bridge.enabled(o.serial),
                      "reachable": br.available(o.serial, recheck=True)}
+        out["auth"] = br.bridge(o.serial).auth
+        if br.last_heal:
+            out["self_healed"] = dict(br.last_heal)
+        if br.last_yield:
+            out["u2_yielded"] = dict(br.last_yield)
         if out["reachable"]:
             try:
                 out["health"] = br.bridge(o.serial).health()
             except br.BridgeError as e:
                 out["health_error"] = str(e)[:200]
+        elif out["auth"] == "rejected":
+            out["hint"] = ("the bridge refused our token - read it again with "
+                           "`content query --uri " + br.TOKEN_URI + "`")
         elif out["installed"] and not out["enabled"]:
             out["hint"] = ("installed but not enabled - call bridge_enable(), "
                            "or toggle it in Settings > Accessibility")

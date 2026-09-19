@@ -160,7 +160,7 @@ A raw uiautomator hierarchy for one Instagram reel is ~70 KB of XML.
 }
 ```
 
-`i` is the index `tap(i=…)` takes. `c` is the tap centre. `f` flags
+`i` is the element index; every read also returns `ver`, and taps take `ref="<ver>_<i>"`. Before tapping, the element is found again on a fresh read (`runtime/targeting.py`): if it moved the tap follows it, and if it is gone, replaced, hidden or covered by another window the tap is refused with the reason. A ref from an older screen version is refused outright. `c` is the tap centre. `f` flags
 `C`lickable / `S`crollable / selected. `screenshot` exists but returns a **file
 path**, never inline image data, so it cannot silently flood a context window.
 
@@ -216,10 +216,10 @@ Three parts are not boilerplate:
 
 **History compaction.** Screen dumps are large and highly repetitive — ten in a
 row are mostly the same nav bar. Tool results older than `KEEP_FULL_RESULTS`
-(6) are clipped in place to a stub. Without this, a 30-step run on a cheap model
-either overruns the context window or costs several times what it should. The
-message *shape* is preserved, so the model still sees that a call happened and
-what it was.
+(6) become one-line **step capsules** (below). Without this, a 30-step run on a
+cheap model either overruns the context window or costs several times what it
+should. The message *shape* is preserved, so the model still sees that a call
+happened and what it was.
 
 **Budgets are enforced, not suggested.** Steps, wall-clock and cumulative tokens
 each terminate the run, and the reason is reported in the `final` event rather
@@ -229,6 +229,96 @@ a bad idea.
 **Errors are returned, not raised.** `ToolRegistry.call` never throws. A bad
 argument comes back as `{"error": ..., "expected": <schema>}` so the model can
 correct itself on the next turn instead of the run dying.
+
+**Every run is written to disk.** `harness/recorder.py` appends each event to
+`artifacts/runs/<run_id>.jsonl` as it is yielded. The hook is in `run()` rather
+than in the CLI, so the CLI, `POST /task` and the laptop bridge behind it are
+all covered by one place, and a fourth entry point cannot forget it.
+
+Two details are the whole point of recording *here*:
+
+- **Before compaction.** The event is recorded as yielded, so the file keeps the
+  full screen dump the model was looking at when it chose. The conversation does
+  not — after six steps that result is a one-line capsule. The screen is the
+  input half of every training example; the capsule is not enough for that.
+- **It cannot break a run.** Every filesystem call is guarded, a failure latches
+  recording off for the rest of the run, and `start()` returns `None` on an
+  unwritable directory so the run proceeds unrecorded rather than failing. An
+  agent halfway through driving a real phone must not die because a disk filled.
+
+```bash
+claudephone runs                 # what it has done, newest first
+claudephone runs <run_id>        # replay one, step by step
+claudephone runs <run_id> --json # raw events, for a training set
+```
+
+The recorder knows what happened but not whether it was any good. A person can
+append a label afterwards:
+
+```python
+from claudephone.harness import recorder
+recorder.label("20260905-213700-a3f2", success=True, note="two extra dumps")
+```
+
+### Automatic verification and decision records (B8)
+
+Manual labels meant almost no run had one. Replay (B9) and any learned verifier
+later need runs labelled reliably. So a task can now declare what success looks
+like, in checks a program decides (`harness/verify.py`):
+
+| check | passes when |
+|---|---|
+| `answer` | the final answer matches a regex |
+| `reached_text` | a regex matches text on any screen read |
+| `final_text` | a regex matches text on the last screen read |
+| `package` / `reached_package` | that app was in front at the end / at any point |
+| `field` | a tool result carried that field with a non-null value |
+| `milestones` | several texts were reached, in order (MobiFlow's DAG, as a sequence) |
+
+- **Three outcomes, not two.** Each check is `pass`, `fail` or `inconclusive`. A
+  run passes only if every check passes; one fail fails it. `final_text` on a
+  run from before B8, or on a last screen read more than 120 s before the end, is
+  inconclusive, not failed.
+- **A model only when unsure, and only when asked.** With `--judge`, an
+  inconclusive run gets one helper call. The helper sees the record, not the
+  phone, and may answer `unsure`. It is never asked when the checks decided.
+- **Screen evidence is screen evidence.** Text counts as reached only if it came
+  from a screen read: element texts, `appeared` lists, the final screen. A tool's
+  own words never count. `find_element` saying "no element matching 'Screen
+  timeout'" is not evidence of reaching the Screen timeout screen.
+- **The verdict is appended as a `label` row** (`by: "verify"`), next to any
+  human label, never replacing one. `claudephone runs` shows it.
+
+```bash
+claudephone run "What is the screen timeout?" --expect '\b10\s*min' --reached 'screen timeout'
+claudephone run "<goal>" --verify evals/tasks/screen_timeout.json [--judge]
+claudephone verify latest --expect 'april\s*2022'        # check an old run
+claudephone verify <run_id> --verify spec.json --no-label   # look, don't write
+```
+
+**Decision records.** Every step also writes one `decision` record to the run
+file:
+- the clickable and scrollable elements of the screen the model last read (the
+  candidates);
+- the call it made, with the element it aimed at resolved from its ref, index or
+  tap point;
+- what the screen did next.
+
+That is V-Droid's training format. Nothing trains on it now; it is logged because
+it cannot be recovered later. A step on an already-listed screen points back
+(`candidates_as_step`) instead of repeating the list. Decision records and a
+`final_screen` record go to the file only, never the event stream.
+
+Verified 2026-09-19:
+- **The six A/B runs recorded that day,** checked read-only: every verdict matched
+  the A/B's own grading. One DeepSeek run *had* reached a screen showing "Screen
+  timeout" before it ran out of steps. The grader could not see that; the
+  `reached_text` check did.
+- **A live DeepSeek run on the Samsung:** checked and labelled `fail` automatically
+  when it ended, with 8 decision records and a final screen 0.13 s old.
+
+Runs contain whatever the tools returned, including SMS, contacts and clipboard
+contents. `artifacts/` is gitignored. `CLAUDEPHONE_RECORD=0` turns it off.
 
 ---
 
@@ -254,6 +344,23 @@ the model simply refusing to act.
 
 In json mode the loop enforces one call per turn, because small models reliably
 lose track when asked to batch.
+
+**A call that cannot be read is corrected, not taken as the answer (B11).**
+Before, a json-mode reply the parser could not read - single quotes, a trailing
+comma, an unbalanced brace, `function`/`parameters` instead of `tool`/`args`, a
+bare `<tool_call>` tag - fell through as prose and ended the run as if it were
+the answer. Now `diagnose_attempt` recognises the attempt and names what is
+wrong ("it uses single quotes; JSON needs double quotes"). The loop sends a
+short correction with one correct example and **does not echo the broken
+reply**: shown its own mistake, a small model tends to copy it. After three in a
+row the run stops with `stopped_by="malformed_calls"`, and a good call resets
+the count. Native tool calls whose arguments are not JSON get the same kind of
+error back instead of reaching the tool as a string.
+
+The test is deliberately narrow. It needs a json fence, a tool-call tag, or an
+object naming a tool alongside its arguments, so an answer that merely contains
+JSON is still an answer. Run against every final answer recorded so far (728 in
+909 runs), it flagged none.
 
 ---
 
@@ -285,6 +392,55 @@ watching client sees each tap land rather than a report at the end.
 
 ---
 
+### MCP hygiene (B12)
+
+- **Annotations on every tool** (`mcp_hints.py`). MCP clients auto-approve on
+  `readOnlyHint`, so a wrong hint in the permissive direction is a safety bug.
+  - Read-only is an explicit list of 32 tools that observe without changing the
+    phone, spending ledger budget, or returning private content. SMS, contacts,
+    the clipboard, notifications and file contents are excluded. So is
+    `ig_open_profile`, which only reads but navigates and is a counted read.
+  - Destructive covers the dangerous packs, the OUTBOUND tools, and account
+    writes outside those packs (`x_feed_like`, `tg_join`, ...), 33 in all.
+  - Everything else, such as `tap`, gets no destructive hint. Per the MCP spec
+    that means "may be destructive", which is true of a tap.
+- **`batch`** on the direct MCP server runs up to 20 calls in one round trip,
+  with `stop_on_error` and `list_at_end`. It refuses a destructive call, and a
+  nested batch, before running anything: one approval must not stand in for a
+  send.
+- **Errors carry `next`.**
+  - An unknown tool comes back with close matches and a pointer to
+    `find_tool`.
+  - Bad arguments come back with the expected schema.
+  - An exception is mapped to its likely cause: adb, bridge, a timeout, or
+    anything else ("read the screen before trying again").
+- **`diagnose(attempt_fix)`** returns data: adb, screen, bridge and ledger. Its
+  only fixes are safe ones:
+  - It restarts the adb server only on a laptop, and only when no other
+    process holds a phone lock. A collection run or the scheduled A/B would
+    otherwise lose its connection.
+  - It re-enables the bridge service.
+  - It never runs `pkill -f uiautomator`, never unlocks the phone, and never
+    clears an unauthorised prompt.
+- **Task control for the laptop**, ARTEMIS's task-level shape:
+  - `POST /task {"background": true}` returns at once.
+  - `GET /task/<id>` and `GET /tasks` report progress. They show the last
+    steps without screen dumps, plus any question waiting on an answer.
+  - `POST /task/<id>/stop` ends the run at the next step boundary, as
+    `stopped_by="operator_stop (...)"`.
+  - `GET /runs/<id|latest>` reads a recorded run back with its verdict.
+  - `mcp_bridge.py` exposes these as `phone_task(background=True)`,
+    `phone_task_status`, `phone_task_stop`, `phone_reply` and
+    `phone_run_inspect`.
+
+Verified 2026-09-19:
+- A real MCP client session over stdio against `claudephone mcp` on the Samsung
+  listed 165 tools with annotations and ran a batch of three observation tools.
+  A batch containing `tg_send` was refused before anything ran.
+- `diagnose` was clean on both phones.
+- The background, status, stop and runs path is tested end to end against the
+  real HTTP handler.
+
 ## Permissions
 
 The project brief was "full phone control, no exceptions" on a dedicated
@@ -310,6 +466,347 @@ They run only when named explicitly: `--allow phone_sms_send`. `device_shell`
 also refuses a small list of unrecoverable command patterns (`rm -rf /`, `mkfs`,
 `fastboot`, …) unless `confirm_destructive=true` — a speed bump for a confused
 agent, not a security boundary, since the shell is fully general.
+
+### Account writes are judged by target, and counted by the ledger
+
+The `dangerous` flag is per TOOL, so it cannot tell a tap on "Close" from a tap
+on "Follow". `policy/writes.py` judges every tap by the element it will actually
+hit - the re-found target and whatever sits under the tap point, whichever is
+stricter - using `policy/writes.json`:
+
+| verdict | examples (Instagram ids verified on IG 440/446) | what happens |
+|---|---|---|
+| read | author name, Comment, Share, Playback | tap |
+| forbidden | `like_button`, `save_button`, Repost, share-sheet recipients, Add to story, comment likes, the comment gift button, More-sheet Save/Report, unfollow | refused, always - unless the operator allows that rule id for the run (`--allow-rule`) |
+| write | Follow, Interested, Not interested, Telegram Join, X Not interested | only if the run enabled it (`--allow-write follow`), the mode is not readonly, the phone's account is known, and datacollect's ledger (`budget_for`) has room this minute, hour and day; then recorded in the ledger with the run id |
+
+Every "no" fails closed: no ledger reachable (e.g. on the phone itself), unknown
+phone, or an account at its ceiling all refuse. `verify=false` skips the re-read
+but never the gate. The X feed tools and `tg_join` use the same gate for their
+`apply=true` writes. Verified live on the Samsung with a dry-run dispatcher: Like
+and Save refused with zero dispatches, More-sheet rows classified as above.
+
+### Budgeted reads are counted too (B2b)
+
+The one restriction this project has had came from READ volume (316 profile
+opens in 27 minutes), not writes. `policy/reads.py` puts every budgeted read
+through the same ledger, with the same action names and pacing as datacollect's
+phases:
+
+| read | counted by |
+|---|---|
+| `profile_open` | `ig_open_profile`; taps on a reel author, avatar, search-result user, "Go to X's profile" |
+| `grid_scan` | `ig_scan_grid`, `ig_scan_reels_grid` (one per call) |
+| `reel_open` | taps on grid tiles; each post `ig_collect_posts` reads; a forward swipe in a reel viewer opened from a grid |
+| `reel_walk` | `ig_collect_reel_details` (one per walk, as phase F counts it) |
+| `feed_reel` | `reset_reels_feed`, a tap on the Reels tab, each forward swipe in the Reels tab (including off a "Suggested for you" card) |
+| `sheet_open` | `ig_about_reel`; taps on the reel More button |
+| `comment_read` | `ig_collect_reel_comments(open_sheet=true)`; taps on Comment / the caption |
+| `search` | `text_input` into an Instagram search box |
+| `tg_read` | every Telegram chat opened: `tg_open(chat)`, every tool that takes `chat`, each row `tg_chats(deep=true)` opens |
+
+Before the read: hour and day through `Ledger.can` (so `budget_for` and
+`ACCOUNT_SCALE`), then a wait of up to 75 s for the per-minute ceiling. After
+it: one ledger row, `run_id` `claudephone:<run>`, note `claudephone read`. Loops
+re-check each item and stop at a ceiling rather than overrun it. Refusals are
+returned as `{"error": "ledger refused this read", "read": {...}}` before
+anything is tapped or deep-linked.
+
+Fails closed like writes: an unknown phone or no reachable ledger refuses the
+read — which means **on the phone itself these tools refuse** until a ledger
+service exists, unless the operator runs with `--allow-uncounted-reads` (or
+`CLAUDEPHONE_UNCOUNTED_READS=1`); results then say `counted: false`.
+
+Typing is also judged by target: `text_input` and Enter are refused while a
+comment / DM / reply box is on screen (`composers` in `writes.json`: resource
+ids plus a hint pattern), rule id `any.composer`.
+
+X and Telegram reads count too, under names datacollect's `BUDGET` has no entry
+for: `x_search`, `x_scroll` (one timeline read), `x_consume` (one dwell session),
+`x_sheet_open` and `tg_search`. `budget_for` falls back to `DEFAULT` (4/min,
+60/hour, 300/day) for an unknown action and still applies `ACCOUNT_SCALE`, so
+they are bounded without editing the ceiling table - giving them explicit
+ceilings is Arnav's call. Generic swipes in X count in **batches of ten**
+(`reads.bucketed`), which bounds a runaway loop at 40 swipes a minute without
+pacing a dwell-based read down to one swipe every 15 s.
+
+`ledger_status` reports, per platform, which account this phone maps to, whether
+the ledger is local or the service, and what is left for each action today.
+
+Still not counted: LinkedIn (ClaudePhone has no LinkedIn tools; that leg lives in
+datacollect), and swipes on other apps' screens. datacollect's phases call MobileAgentMCP, not these tools,
+so nothing is counted twice. Verified live on the Samsung (IG 446): 10 counted
+reads, 10 ledger rows, typing and Enter refused in the comment sheet, and an
+author tap with no ledger refused with zero dispatches.
+
+### The ledger, reachable from the phone (B2c)
+
+The gate needs `datacollect/collect.db`, which is on the laptop, not in Termux,
+so an agent running ON the phone had every budgeted write and counted read
+refused. `policy/ledger_service.py` closes that: the laptop serves the ledger on
+loopback and the phone reaches it through `adb reverse` - the mirror of the
+bridge's `adb forward`.
+
+```bash
+python -m claudephone.policy.ledger_service --serial RZ8N70HYQSB   # laptop
+export CLAUDEPHONE_LEDGER_URL=http://127.0.0.1:8770                # phone
+export CLAUDEPHONE_LEDGER_TOKEN=...                                # printed above
+```
+
+`RemoteLedger` answers the same four calls as datacollect's `Ledger` - `budget`,
+`can`, `count`, `record` - so `writes.py` and `reads.py` cannot tell which one
+they hold, and nothing changes when the URL is unset. **The laptop stays the only
+thing that reads a ceiling or writes a row:** the phone sends an account, an
+action and a count, and the service answers from `budget_for`, scaling included.
+A service that stops answering raises the same `LedgerUnavailable` as a missing
+database, so it fails closed. Auth mirrors the bridge: a token in
+`~/.claudephone/ledger_token` (0600), constant-time compared, required on
+everything but `/health`; the socket binds `127.0.0.1` only.
+
+Verified from the Samsung over `adb reverse`: `/health` 200 without a token,
+`/budget` 401 without it and 200 with it, and @saravbhaita's ceilings came back
+scaled to 25% with the review note attached.
+
+### App cards and verified deep links (B6)
+
+An agent on the phone never read PROJECT-CONTEXT, so without help it would
+rediscover each trap - Instagram 446's search going silent after one query, the
+reel overlay lagging the swipe, a sheet left open stranding the next step - at
+the cost of steps and, on Instagram, of reads counted against the account.
+
+**Cards** (`src/claudephone/cards/<package>.md`) hold that knowledge per app:
+Instagram, Telegram and X today. The first time an app with a card comes to the
+front, the card goes into the conversation - once per run, so a run that never
+opens Instagram never pays for the Instagram card.
+
+**`open_link(url)`** replaces a navigation sequence with one intent - on
+Instagram, search + typing + tapping a result becomes a single profile open. It
+fails in ways that look like success, so it is strict:
+
+- only prefixes in `cards/deeplinks.json` are followed, and only once
+  `claudephone deeplinks --verify` has watched them land on a real phone;
+- the foreground must become the package the registry names - landing anywhere
+  else is an error, and nothing is recorded in the ledger;
+- a locked or sleeping phone is refused up front, because on a lock screen every
+  deep link "succeeds" and every read comes back empty (PROJECT-CONTEXT §6);
+- the URL comes from the model and goes into a shell command, so anything
+  outside a URL-safe character set is refused rather than escaped;
+- the read it stands for is still counted (a profile opened by link is a
+  `profile_open`).
+
+Verified 2026-09-18: `instagram://user?username=` (IG 447) and
+`twitter://user?screen_name=` (X 12.25) on the Samsung; `https://t.me/` and
+`tg://resolve?domain=` (Telegram 12.10) on the realme, which is where Telegram is
+installed - on the Samsung both correctly reported "did not land". The first
+verification attempt found the Samsung's screen had locked; all four were refused
+with nothing spent.
+
+**Notes now go in after a turn's tool results.** Stagnation warnings and cards
+are held until every tool call in the model's turn has its result. A user message
+between two tool results breaks the tool-calling format, and the B4 code also
+broke out of the batch on a warning, leaving the model's remaining calls with no
+result at all - reproduced on the old code: three calls, two results.
+
+### Text entry that proves it worked (B10)
+
+`text_input` was `adb shell input text`, sent and forgotten. Measured on both
+phones on 2026-09-19, that command does not drop non-ASCII quietly: with
+Devanagari it throws a `NullPointerException` inside Android's
+`InputShellCommand` and types nothing. That rules out Hinglish queries, ₹ and
+emoji. Telegram's helper avoided the crash by stripping non-ASCII first, so a
+message could go out with pieces missing.
+
+`runtime/text_entry.py` now puts text in a field in three stages, and every result
+names the channel used:
+
+1. **The bridge's `/text`** (ACTION_SET_TEXT on the input-focused field), which
+   takes any Unicode. Bridge 0.2.2 re-reads the live node for up to 0.8 s and
+   returns what the field holds.
+2. **An independent read-back** from a fresh tree read: the focused editable
+   field must hold the text too. `performAction` can return true and change
+   nothing, as with a residual focus node, so neither the return value nor one
+   reading is trusted alone. A field showing only its hint reads as empty (the
+   `H` flag).
+3. **`adb input text` as a fallback, for plain ASCII only.** It runs when the
+   bridge is unreachable or the app ignored ACTION_SET_TEXT, and it clears the
+   field first when replacing. Non-ASCII with no working bridge is refused
+   before anything is typed.
+
+A mismatch is an error that says what the field holds. A password field reads
+back masked, so it is reported `verified: null`, never `true`. `text_input` and
+Telegram's `_type` both use this path. Telegram's send and reply stop before
+Send when the text did not take.
+
+**Verified 2026-09-19** on both phones, in the Settings search field:
+
+| input | result | time |
+|---|---|---|
+| ASCII | verified by node and tree | 0.35-0.7 s |
+| `दिल्ली food ₹99 😋` | verified by node and tree | 0.35-0.7 s |
+| append | verified | — |
+| clear | verified | — |
+| bridge off, ASCII | typed by `adb` and verified | — |
+| bridge off, Devanagari | refused up front | — |
+| old path, Devanagari | `NullPointerException`; the field stayed empty | — |
+
+**Not done: the IME.** A zero-UI keyboard in the bridge APK, the second half of
+the plan, would cover apps that ignore ACTION_SET_TEXT. Using it means switching
+the phone's system keyboard, which is a person's decision. No app met so far has
+needed it.
+
+### Guarded replay of verified runs (B9)
+
+A routine that has been done correctly once can be done again without a model.
+`harness/replay.py` turns a **verified** run (B8's `pass`, or a person's
+`success=True`) into a macro, and refuses an unverified one, whose mistakes
+it would replay faithfully.
+
+**What a macro holds.** From the run's decision records, each action step
+keeps:
+- the **pre-state**: the actionable element keys and the app, taken from the
+  screen the model last read;
+- the target as a **selector** (id, text, description), never a ref.
+
+Pure reads are dropped. `--slot handle=creator_a` turns a value into a
+parameter.
+
+**How a replay runs.** Each step waits for the live screen to match its
+pre-state. The rule is mobilerun's: element-key Jaccard × 0.85 + same app ×
+0.15, at least 0.85. The step then finds its target among the visible elements
+and acts through the same registry the agent uses, so B2 write rules and ledger
+counting apply unchanged. Replay configures the write policy itself: no
+budgeted write unless named with `--allow-write`, and ledger rows are tagged
+with the replay's run id. On the first mismatch it stops and returns a handoff;
+`--handoff` gives the rest of the goal to the agent. Each replay is recorded as
+a run (`model: "replay"`), including the screen each step was matched against.
+It is then verified with the macro's own screen checks. A replay has no answer,
+so `answer` checks are skipped.
+
+Two things the live runs taught:
+- **A pre-state is only as fresh as the last read.** `wait_stable` right after
+  a tap carried the previous screen and failed to match at 0.30. A step whose
+  saved screen predates the last action now has no screen guard; a targeted
+  step is still guarded by having to find its element.
+- **`scroll_to` said "found" for an element nobody could tap.** On Samsung
+  Settings > Display, "Screen timeout" sat under the collapsing title bar,
+  hidden, while its summary line was visible. `scroll_to` now needs a visible
+  match. It nudges a hidden one into view with short, slow drags, except on a
+  reel viewer, where a drag could advance a reel uncounted.
+
+Verified 2026-09-19 on the Samsung (Settings > Display > Screen timeout):
+- The scripted run took 12.5 s and was verified `pass`.
+- The macro, 7 steps, was replayed with no model through `claudephone macro run`:
+  7 of 7 steps, every guarded match 1.00, 11.4 s, verified `pass` automatically.
+  The timeout setting was 600000 before and after.
+- On the realme the same macro stopped at step 3: the realme's Settings matched
+  at 0.23. It handed off instead of guessing.
+
+The human-demo half (Part C) needs the demo recorder, which does not exist yet.
+The macro format is the target it will write to.
+
+### Step capsules, `remember` and `recall` (B7)
+
+Until B7, a result older than six steps was cut to its first 220 characters. On
+a profile pass the follower count read at step 3 was gone by step 10: the model
+either re-read the screen - a counted read on Instagram - or guessed. And the
+cut was blind: 220 characters of a screen dump are mostly JSON keys.
+
+Now an aged-out result becomes one line, built by `harness/history.py` from
+what the loop already knows - the call, the screen fingerprint and labels
+before and after - with no model call:
+
+    T+00:03 #4 ui_dump(limit=40) -> content changed (com.android.settings);
+    appeared: 'Digital Wellbeing & parental controls', ... +3 more
+    | full result: recall(steps=[4])
+
+- **Neutral wording.** A capsule says what was observed - `content changed`,
+  `same items, positions moved`, `screen unchanged`, `no screen read`,
+  `returned an error: ...` - never "successfully", "failed" or "navigated to". A
+  verdict in history gets believed later, even when it was wrong.
+- **`remember(key, value)`** pins a fact for the whole run. Notes ride in the
+  system message on every call and are never compacted. A note that reads like
+  a verdict is kept, with a hint to record what was seen instead.
+- **`recall(steps=[n])`** returns step n's full result from the run's own JSONL;
+  **`recall(query=...)`** searches every earlier result and thought. Recall
+  never finds its own earlier results. With recording off, it reads an
+  in-memory copy.
+- **JSON-mode runs are compacted now.** Results were found by `role == "tool"`,
+  but in json mode a result is a user message, so a json-mode run was never
+  compacted at all. Results are now marked by step, whatever the convention.
+- `remember` and `recall` neither advance nor reset the stagnation idle count:
+  pinning three notes is not "the screen has not changed in three steps".
+
+Verified 2026-09-19 on both phones (Settings, scripted model: no model quota,
+no ledger reads). Six old results became capsules naming what each scroll brought
+into view. The pinned note stayed in the system message. `recall(steps=[1])`
+returned step 1's 3.7-4 KB result. `recall(query=...)` found the label at steps
+1 and 10, where the list had been scrolled back.
+
+### Handing back to a person, and the screens that are not ours to clear (B3)
+
+Two directions, and they are not the same:
+
+- **`request_human(reason)`** - the agent gives up; the run ends with
+  `stopped_by="human_required"` and the reason. Nothing waits.
+- **`ask_operator(question)`** - the agent needs one fact and can continue with
+  it. The run BLOCKS. On the CLI the question goes to the terminal; over HTTP the
+  task emits an `ask` event carrying a `session_id` and waits for
+  `POST /reply {"session_id", "answer"}`. No channel, or no answer in time, ends
+  the run rather than letting the model guess.
+
+The third path is not the model's to decide. Doctrine is that a phone meeting a
+checkpoint or 2FA **stops that account entirely**, and a cheap model looking at
+"We detected unusual activity" will keep tapping, because tapping is what it
+does. So `harness/handoff.py` checks every screen the loop sees, and a match ends
+the run whatever the model intended - before the next tool call, not after it.
+The prompt says the same in words; the guard is what actually holds.
+
+What it matches: suspicious/unusual activity, "confirm it's you", security
+checks and CAPTCHAs, "action blocked", "try again later", two-factor and code
+prompts, disabled or restricted accounts - plus **a password field**, which has
+no business appearing in a session on an account that is already signed in.
+Ordinary words like "Log in" are deliberately not matched; they appear on
+screens that are perfectly safe.
+
+Verified live: pointed at a page containing the phrase, the run stopped at step 1
+with `human_required` and the evidence attached. That run also shows the honest
+limitation - **it matches text, so a screen that merely mentions a challenge
+trips it too** (there, a search box containing the phrase). Stopping a run that
+did not need stopping is the cheap direction of that error, and
+`checkpoint_guard=False` exists for the rare case where it is wrong.
+
+### A stuck run says so, instead of burning the budget (B4)
+
+Cheap models loop, and these apps give them reasons to: Instagram 446's search
+goes quiet after the first query in a session, swipes do not always advance, and
+a tap on a control that has scrolled away does nothing at all. Left alone the
+model repeats the call until `max_steps` ends the run — the most expensive way to
+fail, reported under the wrong reason.
+
+`harness/stagnation.py` watches for one narrow thing: **the same tool, the same
+arguments, and no evidence the screen moved.**
+
+| attempts | what happens |
+|---|---|
+| 2 | a `POSSIBLY STUCK` note goes into the conversation, telling the model to read the screen and change approach rather than retry |
+| 3 | the run ends with `stopped_by="stagnation"`, naming the tool and arguments |
+
+Repeating a call that *does* move the screen is progress through a feed and is
+never flagged. A screen matching one seen `revisit_gap` steps earlier produces a
+softer hint ("you were on this screen at step N") because circling back is
+sometimes the right route. The fingerprint comes from `state.remember`, which
+every read already computes, so this costs nothing.
+
+**No fingerprint at all counts as no progress, not as progress.** That was found
+live: 25 identical swipes with no `ui_dump` between them ran to `max_steps`
+without a word, because "unknown" was being treated as "the screen moved". With
+that fixed, the same run stops in 3 steps, or 5 with reads interleaved.
+
+`--no-stagnation-stop` keeps the warning and drops the stop, which is what an
+operator watching a run by hand usually wants. The prompt carries the matching
+operating rules — wait at most three times, check the last action took effect,
+lengthen a swipe that did nothing then reverse it, one query per tab, three
+routes then report — so the model has the same policy the harness enforces.
 
 The HTTP server binds `127.0.0.1` by default. Exposing it on the LAN requires
 an explicit `--host` and then **mandates** a bearer token, generated on first

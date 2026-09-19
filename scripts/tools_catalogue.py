@@ -28,6 +28,7 @@ PACK_BLURBS = {
     "instagram_capture": "Segmented screen recording of reels via MediaProjection.",
     "instagram_web": "Instagram over HTTP, no device - far faster where it works.",
     "x": "X/Twitter timelines, search, and the feed-shaping controls.",
+    "telegram": ("Telegram channels and chats: read, search, join, reply. Parsed from labels, not ids - the app publishes none."),
 }
 
 
