@@ -123,7 +123,14 @@ claude mcp add claudephone -- python bridge/mcp_bridge.py
 
 The laptop then has `phone_task`, `phone_tool`, `phone_tools` and
 `phone_status`. `phone_task` sends a **goal**; the phone runs its own loop
-locally and streams back a transcript.
+locally and streams back a transcript. For long tasks,
+`phone_task(..., background=True)` returns a session id at once, and
+`phone_task_status`, `phone_task_stop`, `phone_reply` and `phone_run_inspect`
+follow it.
+
+Every tool carries MCP annotations. Ones that only look (`ui_dump`,
+`device_info`, ...) are marked read-only, so a client can auto-approve them.
+Sends, likes, joins, file writes and shell are marked destructive.
 
 This matters more than it looks. Driving the phone step-by-step from the laptop
 costs one turn of a large model *per tap*. Delegating costs one laptop turn

@@ -80,6 +80,30 @@ class Tool:
         }
 
 
+def next_step(e: BaseException) -> str:
+    """What to do about a tool that raised, in one line (B12).
+
+    A bare exception string leaves a model to guess, and the usual guess is to
+    call the same thing again. Most failures here have one of a few causes, and
+    each has a known next move.
+    """
+    kind, text = type(e).__name__, str(e).lower()
+    if kind == "DeviceError" or "adb" in text:
+        if "unauthorized" in text:
+            return ("the phone has not authorised this computer: a person must "
+                    "accept the USB-debugging prompt on the phone")
+        if "offline" in text or "not found" in text or "no devices" in text:
+            return "the phone is not connected; call diagnose() to see why"
+        return "an adb command failed; call diagnose() before retrying"
+    if kind == "BridgeError" or "bridge" in text:
+        return ("the accessibility bridge did not answer; call bridge_status(), "
+                "and diagnose(attempt_fix=True) if it is unbound")
+    if kind in ("TimeoutError", "timeout") or "timed out" in text:
+        return "it timed out; read the screen (ui_dump) and retry once at most"
+    return ("read the screen (ui_dump) before trying again, and do not repeat "
+            "the same call more than once")
+
+
 class ToolRegistry:
     """Holds tools, renders their specs, and runs them."""
 
@@ -171,9 +195,15 @@ class ToolRegistry:
         """Run a tool. Never raises - the model needs to see the error text."""
         t = self.tools.get(name)
         if t is None:
-            near = [n for n in self.tools if name.lower() in n.lower()][:5]
-            return {"error": "no such tool: " + name,
-                    "did_you_mean": near or None}
+            import difflib
+            key = str(name or "")
+            near = [n for n in self.tools if key.lower() in n.lower()][:5]
+            near += [n for n in difflib.get_close_matches(key, list(self.tools), n=3)
+                     if n not in near]
+            return {"error": "no such tool: " + key,
+                    "did_you_mean": near or None,
+                    "next": "call find_tool(query='<what you want to do>') to "
+                            "search every pack, including unloaded ones"}
         t0 = time.time()
         try:
             sig = inspect.signature(t.fn)
@@ -189,8 +219,11 @@ class ToolRegistry:
         except TypeError as e:
             return {"error": "bad arguments for " + name + ": " + str(e),
                     "expected": t.schema,
+                    "next": "call " + name + " again with the parameters in "
+                            "`expected` (names and types exactly as listed)",
                     "_ms": int((time.time() - t0) * 1000)}
         except Exception as e:
             return {"error": type(e).__name__ + ": " + str(e)[:600],
+                    "next": next_step(e),
                     "trace": traceback.format_exc(limit=3)[-600:],
                     "_ms": int((time.time() - t0) * 1000)}

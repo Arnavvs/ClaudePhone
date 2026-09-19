@@ -392,6 +392,55 @@ watching client sees each tap land rather than a report at the end.
 
 ---
 
+### MCP hygiene (B12)
+
+- **Annotations on every tool** (`mcp_hints.py`). MCP clients auto-approve on
+  `readOnlyHint`, so a wrong hint in the permissive direction is a safety bug.
+  - Read-only is an explicit list of 32 tools that observe without changing the
+    phone, spending ledger budget, or returning private content. SMS, contacts,
+    the clipboard, notifications and file contents are excluded. So is
+    `ig_open_profile`, which only reads but navigates and is a counted read.
+  - Destructive covers the dangerous packs, the OUTBOUND tools, and account
+    writes outside those packs (`x_feed_like`, `tg_join`, ...), 33 in all.
+  - Everything else, such as `tap`, gets no destructive hint. Per the MCP spec
+    that means "may be destructive", which is true of a tap.
+- **`batch`** on the direct MCP server runs up to 20 calls in one round trip,
+  with `stop_on_error` and `list_at_end`. It refuses a destructive call, and a
+  nested batch, before running anything: one approval must not stand in for a
+  send.
+- **Errors carry `next`.**
+  - An unknown tool comes back with close matches and a pointer to
+    `find_tool`.
+  - Bad arguments come back with the expected schema.
+  - An exception is mapped to its likely cause: adb, bridge, a timeout, or
+    anything else ("read the screen before trying again").
+- **`diagnose(attempt_fix)`** returns data: adb, screen, bridge and ledger. Its
+  only fixes are safe ones:
+  - It restarts the adb server only on a laptop, and only when no other
+    process holds a phone lock. A collection run or the scheduled A/B would
+    otherwise lose its connection.
+  - It re-enables the bridge service.
+  - It never runs `pkill -f uiautomator`, never unlocks the phone, and never
+    clears an unauthorised prompt.
+- **Task control for the laptop**, ARTEMIS's task-level shape:
+  - `POST /task {"background": true}` returns at once.
+  - `GET /task/<id>` and `GET /tasks` report progress. They show the last
+    steps without screen dumps, plus any question waiting on an answer.
+  - `POST /task/<id>/stop` ends the run at the next step boundary, as
+    `stopped_by="operator_stop (...)"`.
+  - `GET /runs/<id|latest>` reads a recorded run back with its verdict.
+  - `mcp_bridge.py` exposes these as `phone_task(background=True)`,
+    `phone_task_status`, `phone_task_stop`, `phone_reply` and
+    `phone_run_inspect`.
+
+Verified 2026-09-19:
+- A real MCP client session over stdio against `claudephone mcp` on the Samsung
+  listed 165 tools with annotations and ran a batch of three observation tools.
+  A batch containing `tg_send` was refused before anything ran.
+- `diagnose` was clean on both phones.
+- The background, status, stop and runs path is tested end to end against the
+  real HTTP handler.
+
 ## Permissions
 
 The project brief was "full phone control, no exceptions" on a dedicated

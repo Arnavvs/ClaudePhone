@@ -23,6 +23,7 @@ from .tools import (compound_tools, device_tools, explore_tools, file_tools,
 from .tools import deeplink_tools
 from .tools import handoff_tools
 from .tools import memory_tools
+from .tools import diagnose_tools
 from .tools import phone_tools
 from .tools.apps import instagram as ig_tools
 from .tools.apps import instagram_comments as ig_comments
@@ -50,6 +51,7 @@ def build_registry() -> ToolRegistry:
         handoff_tools.register(reg)
         deeplink_tools.register(reg)
         memory_tools.register(reg)
+        diagnose_tools.register(reg)
 
     # Compound actions belong in core: they are how the agent should move by
     # default, and gating them behind use_tools() would mean the expensive

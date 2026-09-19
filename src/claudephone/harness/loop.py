@@ -165,6 +165,9 @@ class Agent:
         # whether an inconclusive check may be settled by one helper call.
         self.verify_spec = verify_spec
         self.judge = judge
+        # B12: set from another thread (POST /task/<id>/stop) to end the run at
+        # the next step boundary - never in the middle of a tool call.
+        self.stop_requested = ""
         self.messages: list[dict] = []
 
     # -- spend (B5) ----------------------------------------------------------
@@ -434,6 +437,8 @@ class Agent:
             stop = self.budget.exceeded(steps, started, tokens,
                                         usd=self.spend_usd(),
                                         free_left=self.free_left())
+            if self.stop_requested and not stop:
+                stop = "operator_stop (" + self.stop_requested + ")"
             if stop:
                 yield {"type": "budget", "stopped_by": stop, "steps": steps}
                 # The run was cut off, not finished: there is no answer, but the
