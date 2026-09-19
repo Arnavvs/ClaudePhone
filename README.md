@@ -92,6 +92,8 @@ claudephone tools --pack phone          # browse the tool surface
 claudephone tool ui_dump --args '{"limit":10}'   # call one tool directly
 claudephone runs                        # every run it has ever done
 claudephone verify latest --expect '<regex>'   # check a run, label it pass/fail
+claudephone macro make latest --name X  # a verified run becomes a guarded macro
+claudephone macro run X                 # replay it with no model; stops on a mismatch
 claudephone serve --host 0.0.0.0        # accept tasks from your laptop
 ```
 

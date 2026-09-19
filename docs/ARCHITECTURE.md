@@ -654,6 +654,56 @@ the plan, would cover apps that ignore ACTION_SET_TEXT. Using it means switching
 the phone's system keyboard, which is a person's decision. No app met so far has
 needed it.
 
+### Guarded replay of verified runs (B9)
+
+A routine that has been done correctly once can be done again without a model.
+`harness/replay.py` turns a **verified** run (B8's `pass`, or a person's
+`success=True`) into a macro, and refuses an unverified one, whose mistakes
+it would replay faithfully.
+
+**What a macro holds.** From the run's decision records, each action step
+keeps:
+- the **pre-state**: the actionable element keys and the app, taken from the
+  screen the model last read;
+- the target as a **selector** (id, text, description), never a ref.
+
+Pure reads are dropped. `--slot handle=creator_a` turns a value into a
+parameter.
+
+**How a replay runs.** Each step waits for the live screen to match its
+pre-state. The rule is mobilerun's: element-key Jaccard × 0.85 + same app ×
+0.15, at least 0.85. The step then finds its target among the visible elements
+and acts through the same registry the agent uses, so B2 write rules and ledger
+counting apply unchanged. Replay configures the write policy itself: no
+budgeted write unless named with `--allow-write`, and ledger rows are tagged
+with the replay's run id. On the first mismatch it stops and returns a handoff;
+`--handoff` gives the rest of the goal to the agent. Each replay is recorded as
+a run (`model: "replay"`), including the screen each step was matched against.
+It is then verified with the macro's own screen checks. A replay has no answer,
+so `answer` checks are skipped.
+
+Two things the live runs taught:
+- **A pre-state is only as fresh as the last read.** `wait_stable` right after
+  a tap carried the previous screen and failed to match at 0.30. A step whose
+  saved screen predates the last action now has no screen guard; a targeted
+  step is still guarded by having to find its element.
+- **`scroll_to` said "found" for an element nobody could tap.** On Samsung
+  Settings > Display, "Screen timeout" sat under the collapsing title bar,
+  hidden, while its summary line was visible. `scroll_to` now needs a visible
+  match. It nudges a hidden one into view with short, slow drags, except on a
+  reel viewer, where a drag could advance a reel uncounted.
+
+Verified 2026-09-19 on the Samsung (Settings > Display > Screen timeout):
+- The scripted run took 12.5 s and was verified `pass`.
+- The macro, 7 steps, was replayed with no model through `claudephone macro run`:
+  7 of 7 steps, every guarded match 1.00, 11.4 s, verified `pass` automatically.
+  The timeout setting was 600000 before and after.
+- On the realme the same macro stopped at step 3: the realme's Settings matched
+  at 0.23. It handed off instead of guessing.
+
+The human-demo half (Part C) needs the demo recorder, which does not exist yet.
+The macro format is the target it will write to.
+
 ### Step capsules, `remember` and `recall` (B7)
 
 Until B7, a result older than six steps was cut to its first 220 characters. On

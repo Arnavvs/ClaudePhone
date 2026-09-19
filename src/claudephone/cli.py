@@ -210,6 +210,99 @@ def cmd_verify(a) -> int:
     return 0 if result["verdict"] == "pass" else 1
 
 
+def _pairs(items) -> dict:
+    out = {}
+    for it in items or []:
+        if "=" not in it:
+            raise SystemExit("expected name=value, got " + repr(it))
+        k, v = it.split("=", 1)
+        out[k.strip()] = v
+    return out
+
+
+def cmd_macro(a) -> int:
+    """Make, list, show and run guarded macros (B9)."""
+    from .harness import recorder, replay
+    if a.action == "list":
+        rows = replay.list_macros()
+        if not rows:
+            print(c("no macros yet in " + replay.MACRO_DIR, DIM))
+        for m in rows:
+            print(c(m["name"], CYAN) + c("  %s steps  slots=%s  %s" % (
+                m["steps"], m["slots"], m["verified"]), DIM))
+            print("   " + str(m["goal"] or "")[:90])
+        return 0
+    if not a.target:
+        print(c("give a run id (make) or a macro name (show/run)", RED))
+        return 2
+    if a.action == "make":
+        rid = a.target
+        if rid == "latest":
+            ids = recorder.list_runs(limit=1)
+            rid = ids[0] if ids else ""
+        rows = recorder.load(rid)
+        if not rows:
+            print(c("no such run: " + rid, RED))
+            return 1
+        m = replay.make_macro(rows, a.name or rid, slots=_pairs(a.slot),
+                              allow_unverified=a.allow_unverified)
+        if "error" in m:
+            print(c(m["error"], RED) + ("\n  " + m["next"] if m.get("next") else ""))
+            return 1
+        path = replay.save(m)
+        print(c("macro " + m["name"], BOLD) + c("  from " + rid + "  " + m["verified"], DIM))
+        for n, st in enumerate(m["steps"], 1):
+            bits = [st["tool"] + "(" + json.dumps(st.get("args"), ensure_ascii=False)[:60] + ")"]
+            if st.get("target"):
+                bits.append("-> " + json.dumps(st["target"], ensure_ascii=False)[:60])
+            if st.get("pre"):
+                bits.append(c("[%d keys, %s]" % (len(st["pre"]["keys"]), st["pre"]["pkg"]), DIM))
+            if st.get("unreplayable"):
+                bits.append(c("UNREPLAYABLE: " + st["unreplayable"], RED))
+            print("  %d. %s" % (n, " ".join(bits)))
+        print(c("saved " + path, DIM))
+        return 0
+    m = replay.load(a.target)
+    if m is None:
+        print(c("no such macro: " + a.target, RED))
+        return 1
+    if a.action == "show":
+        print(json.dumps(m, indent=1, ensure_ascii=False))
+        return 0
+    factory = None
+    if a.handoff:
+        from .agent import build_agent
+
+        def factory():
+            return build_agent(provider=a.provider, model=a.model,
+                               allow_writes=a.allow_write or [])
+    out = replay.replay(m, values=_pairs(a.set), agent_factory=factory,
+                        writes=tuple(a.allow_write or []))
+    if "error" in out:
+        print(c(out["error"], RED))
+        return 1
+    for st in out["steps"]:
+        mark = c("✓", GREEN) if st["ok"] else c("✗", RED)
+        sim = "" if st["similarity"] is None else c("  match %.2f" % st["similarity"], DIM)
+        print("  " + mark + " " + str(st["step"]) + ". " + st["tool"] + sim)
+    print(c("\n  replayed %d of %d steps in %ss" % (out["replayed"], out["of"],
+                                                   out["seconds"]), BOLD))
+    if out.get("handoff"):
+        h = out["handoff"]
+        print(c("  stopped at step %s: %s" % (h["at"], h["why"]), YELLOW))
+        if out.get("agent_final"):
+            print(c("  agent took over: " + json.dumps(out["agent_final"],
+                                                       ensure_ascii=False)[:300], DIM))
+        elif not a.handoff:
+            print(c("  (--handoff would give the rest to the agent)", DIM))
+    if out.get("verification"):
+        print(c("  verified: " + out["verification"].upper(),
+                GREEN if out["verification"] == "pass" else RED))
+    if out.get("run_id"):
+        print(c("  recorded as " + out["run_id"], DIM))
+    return 0 if not out.get("handoff") else 3
+
+
 def cmd_serve(a) -> int:
     from .server import serve
     serve(host=a.host, port=a.port)
@@ -707,6 +800,25 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--no-label", action="store_true", dest="no_label",
                    help="print the verdict without writing a label")
     v.set_defaults(fn=cmd_verify)
+
+    mc = sub.add_parser("macro", help="guarded macros from verified runs (B9)")
+    mc.add_argument("action", choices=["make", "list", "show", "run"])
+    mc.add_argument("target", nargs="?", default="",
+                    help="make: a run id or 'latest'; show/run: a macro name")
+    mc.add_argument("--name", default="", help="make: the macro's name")
+    mc.add_argument("--slot", action="append",
+                    help="make: name=value - that value becomes a parameter")
+    mc.add_argument("--allow-unverified", action="store_true", dest="allow_unverified",
+                    help="make: build from a run that was never verified")
+    mc.add_argument("--set", action="append", help="run: slot=value")
+    mc.add_argument("--handoff", action="store_true",
+                    help="run: on a mismatch, give the rest of the goal to the agent "
+                         "(uses the model)")
+    mc.add_argument("--allow-write", action="append", dest="allow_write",
+                    help="run: permit one budgeted account write (still ledger-checked)")
+    mc.add_argument("--provider", default="")
+    mc.add_argument("--model", default="")
+    mc.set_defaults(fn=cmd_macro)
 
     m = sub.add_parser("mcp", help="serve tools over MCP stdio")
     m.set_defaults(fn=cmd_mcp)

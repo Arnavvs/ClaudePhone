@@ -76,6 +76,8 @@ def screens(rows: list) -> list[tuple[int, str]]:
         elif r.get("type") == "decision":
             seen += [(r.get("step") or 0, t)
                      for t in (r.get("outcome") or {}).get("appeared") or []]
+            # A replay (B9) logs the whole screen it matched each step against.
+            seen += [(r.get("step") or 0, t) for t in r.get("screen_texts") or []]
     return seen
 
 

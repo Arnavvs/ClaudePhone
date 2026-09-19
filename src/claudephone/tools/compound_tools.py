@@ -90,6 +90,20 @@ def _swipe(obs: Observer, direction: str, duration_ms: int = 220) -> None:
                 duration=duration_ms / 1000.0)
 
 
+def _nudge(obs: Observer, toward_top: bool) -> None:
+    """A short, slow drag - a quarter screen, no fling - to bring an element
+    that is in the tree but not visible (under a collapsing toolbar, or just
+    past the fold) into view without scrolling past it."""
+    w, h = _screen_size(obs)
+    x = int(w * 0.5)
+    y1, y2 = (int(h * 0.45), int(h * 0.70)) if toward_top else (int(h * 0.70), int(h * 0.45))
+    kind, d = _act(obs)
+    if kind == "bridge":
+        d.swipe(x, y1, x, y2, 450)
+    else:
+        d.swipe(x, y1, x, y2, duration=0.45)
+
+
 def _swipe_gate(o: Observer, direction: str):
     """Ledger check for a swipe that advances an Instagram reel (B2b).
 
@@ -440,10 +454,42 @@ def register(reg) -> None:
             hits = [e for e in obs.elements
                     if q in ((e.text or "") + " " + (e.desc or "")
                              + " " + (e.rid or "")).lower()]
-            if hits:
+            visible = [e for e in hits if not getattr(e, "hidden", False)]
+            # A match the system says is not visible to the user (under a
+            # collapsing toolbar, past the fold) is in the tree but cannot be
+            # tapped. Found live on Samsung Settings > Display: "Screen
+            # timeout" at y=290 was hidden under the title bar while its
+            # summary line below it was visible, and scroll_to said found.
+            if hits and not visible:
+                from ..policy import reads
+                if reads.reel_advance_action(obs.elements, obs.package):
+                    # On a reel viewer any drag can advance a reel uncounted.
+                    return {"found": True, "visible": False, "after_swipes": n,
+                            "matches": len(hits), "ver": state.version(),
+                            "elements": state.with_refs(uix.compact(hits, limit=8)),
+                            "note": "the match is not visible; not nudging on a "
+                                    "reel viewer"}
+                for _ in range(2):
+                    h = _screen_size(o)[1]
+                    _nudge(o, toward_top=hits[0].center[1] < h / 2)
+                    time.sleep(settle_s)
+                    obs = o.look()
+                    hits = [e for e in obs.elements
+                            if q in ((e.text or "") + " " + (e.desc or "")
+                                     + " " + (e.rid or "")).lower()]
+                    visible = [e for e in hits if not getattr(e, "hidden", False)]
+                    if visible or not hits:
+                        break
+            if visible:
                 return {"found": True, "after_swipes": n,
+                        "matches": len(visible), "ver": state.version(),
+                        "elements": state.with_refs(uix.compact(visible, limit=8))}
+            if hits:
+                return {"found": True, "visible": False, "after_swipes": n,
                         "matches": len(hits), "ver": state.version(),
-                        "elements": state.with_refs(uix.compact(hits, limit=8))}
+                        "elements": state.with_refs(uix.compact(hits, limit=8)),
+                        "note": "in the tree but not visible, even after nudging; "
+                                "a tap on it may be refused"}
             if n == max_swipes:
                 break
             gate, refused = _swipe_gate(o, direction)
